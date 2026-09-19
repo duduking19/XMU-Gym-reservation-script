@@ -91,6 +91,7 @@ def build_cli_parser():
         default=8080,
         help="Web 服务监听端口 (默认: 8080)"
     )
+    parser.add_argument("--host", default="0.0.0.0", help="Web 监听地址，服务器建议使用 127.0.0.1")
     parser.add_argument(
         "--no-fallback",
         action="store_true",
@@ -345,7 +346,7 @@ def main():
             logger.error(f"查询场馆空闲状态失败: {e}")
 
     elif args.action == "web":
-        run_server(port=args.port, config_path=config_path)
+        run_server(port=args.port, config_path=config_path, host=args.host)
 
     elif args.action in ("book", "snipe"):
         ensure_valid_session(cfg, session_mgr, client, config_path, timeout=args.timeout)

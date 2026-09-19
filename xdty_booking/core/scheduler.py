@@ -260,7 +260,24 @@ class BookingScheduler:
                 mode="早7点准点抢票"
             )
             
-            if res.get("success"):
+            if res.get("reason") == "course_occupied":
+                message = (f"场馆：{self.cfg.target.stadium_name}\n"
+                           f"入场日期：{visit_date}\n计划时段：{preferred_time}\n"
+                           f"原因：{res.get('info')}\n"
+                           "当天不再预约，也不改约其他时段。"
+                           + ("系统将继续执行下一个计划日。" if self.cfg.scheduler.weekly_enabled else "本次定时任务已结束。"))
+                try:
+                    res["notification"] = self.notifier.send(
+                        title=f"课程占用，已跳过 {visit_date} {preferred_time} 的预约", content=message)
+                    if not any(res["notification"].values()):
+                        logger.warning("课程占用跳过通知未送达，请检查通知配置或网络")
+                except Exception as e:
+                    logger.error("课程占用通知发送异常: %s", type(e).__name__)
+                    res["notification"] = {"error": False}
+                logger.info(res["info"])
+                if self.status_callback:
+                    self.status_callback(res["info"])
+            elif res.get("success"):
                 logger.info(f"🎉 准点抢票大获全胜: {res.get('info')}")
                 if self.status_callback:
                     self.status_callback(f"🎉 准点抢票成功！{res.get('info')}")

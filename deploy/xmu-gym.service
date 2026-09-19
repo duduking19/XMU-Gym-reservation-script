@@ -1,0 +1,25 @@
+[Unit]
+Description=XMU Gym reservation web console and weekly scheduler
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=xmu-gym
+Group=xmu-gym
+WorkingDirectory=/opt/xmu-gym
+Environment=TZ=Asia/Shanghai
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/xmu-gym/.venv/bin/python main.py web --host 127.0.0.1 --port 8080
+ExecStartPost=/usr/bin/curl --fail --silent --show-error --retry 20 --retry-connrefused --retry-delay 1 --max-time 30 --header Content-Type:application/json --data {} http://127.0.0.1:8080/api/scheduler/start
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=120
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

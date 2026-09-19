@@ -17,11 +17,17 @@ class SlotItem:
 
     @property
     def is_available(self) -> bool:
-        return self.status == "available" and self.selected < self.max_count
+        return not self.is_locked and self.status == "available" and self.selected < self.max_count
+
+    @property
+    def is_course_occupied(self) -> bool:
+        return self.status == "locked" or self.select_type == 0 or any(
+            word in (self.lock_reason or "") for word in ("课程", "排课", "教学占用")
+        )
 
     @property
     def is_locked(self) -> bool:
-        return self.status == "locked" or self.select_type == 0 or (self.status != "available" and self.selected == 0)
+        return self.is_course_occupied or (self.status != "available" and self.selected == 0)
 
     @property
     def remaining_capacity(self) -> int:
@@ -107,7 +113,7 @@ class IntervalResponse:
                             interval_id=str(s.get("interval_id", "")),
                             price=float(s.get("price", 0) or 0),
                             selected=int(s.get("selected", 0) or 0),
-                            select_type=int(s.get("select_type", 1) or 1),
+                            select_type=int(s["select_type"]) if s.get("select_type") not in (None, "") else 1,
                             max_count=int(s.get("max_count", 0) or 0),
                             status=s.get("status", ""),
                             is_lock=int(s.get("is_lock", 0) or 0),

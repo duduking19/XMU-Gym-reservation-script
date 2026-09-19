@@ -1132,7 +1132,7 @@ def render_dashboard(data: dict) -> str:
                         <span><input type="checkbox" id="schedWeeklyEnabled" {'checked' if weekly_enabled else ''} onchange="toggleWeeklyPlan()"> 按每周计划循环预约</span>
                     </label>
                     <div id="weeklyPlanFields" style="display: {'block' if weekly_enabled else 'none'};">
-                        <p style="font-size: 13px; color: #475569; line-height: 1.7;">按<strong>实际入场日期</strong>填写；留空表示当天不预约。周六的场次在周五 07:00 开抢。每次结束后继续等待下一计划日，严格预约所填时段，满额不改约其他时段。</p>
+                        <p style="font-size: 13px; color: #475569; line-height: 1.7;">按<strong>实际入场日期</strong>填写；留空表示当天不预约。周六的场次在周五 07:00 开抢。每次结束后继续等待下一计划日，严格预约所填时段，满额不改约其他时段。课程占用时跳过当天，并通过已配置的通知渠道提醒。</p>
                         <div style="display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 8px;">{weekly_rows_html}</div>
                         <datalist id="weeklyTimeOptions">{weekly_options_html}</datalist>
                         <p style="font-size: 12px; color: #64748b;">时段格式：16:30-18:00。修改运行中的计划，请先停止，再保存并重新开启。电脑需保持唤醒，服务重启后需重新开启。</p>

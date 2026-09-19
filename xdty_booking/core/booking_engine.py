@@ -11,6 +11,10 @@ from xdty_booking.notify.notifier import Notifier
 
 logger = logging.getLogger(__name__)
 
+def _skip_course_occupied(info: str = "计划时段被教学排课占用或场馆保留") -> Dict[str, Any]:
+    return {"success": False, "skipped": True, "reason": "course_occupied",
+            "info": f"{info}，已跳过当天预约，不改约其他时段"}
+
 class BookingEngine:
     """
     高并发极速抢票与捡漏执行引擎：
@@ -47,6 +51,10 @@ class BookingEngine:
         """
         提交指定时段的预校验、验证码获取及极速下单流程
         """
+        if slot.is_course_occupied:
+            return _skip_course_occupied()
+        if slot.is_locked:
+            return {"success": False, "info": "该场次当前不可预约"}
         target = self.cfg.target
         week = group.week if group else "5"
         week_name = group.week_name if group else "周五"
@@ -73,6 +81,8 @@ class BookingEngine:
             if isinstance(verify_res, dict) and verify_res.get("status") == 0:
                 info_msg = verify_res.get("info", "选场预校验未通过")
                 logger.warning(f"服务端预校验未通过: {info_msg}")
+                if any(word in str(info_msg) for word in ("课程", "排课", "教学占用")):
+                    return _skip_course_occupied(str(info_msg))
                 return {
                     "success": False,
                     "info": info_msg,
@@ -142,6 +152,8 @@ class BookingEngine:
                     return result
 
                 info_msg = str(order_res.get("info", "")) if isinstance(order_res, dict) else ""
+                if any(word in info_msg for word in ("课程", "排课", "教学占用")):
+                    return _skip_course_occupied(info_msg)
                 if "验证码" in info_msg:
                     logger.warning("提示验证码不匹配，正在重新获取新验证码...")
                     try:
@@ -252,6 +264,8 @@ class BookingEngine:
                 )
 
         # 4. 判断首选时段名额
+        if slot and slot.is_course_occupied:
+            return _skip_course_occupied()
         preferred_available = bool(slot and slot.is_available and (slot.remaining_capacity > 0 or not check_availability))
         
         if slot and preferred_available:
@@ -274,10 +288,7 @@ class BookingEngine:
                 err = f"未找到指定时段场次: 日期 {target_date_str}, 时段 {target_time_str}"
                 logger.error(err)
                 return {"success": False, "info": err}
-            if getattr(slot, "is_locked", False) or slot.status == "locked" or (slot.selected == 0 and not slot.is_available):
-                msg = f"该时段为教学排课占用，暂不对外开放个人预约 (0/{slot.max_count})"
-            else:
-                msg = f"该时段目前无空闲名额 (已约满 {slot.selected}/{slot.max_count})"
+            msg = f"该时段目前无空闲名额 (已约满 {slot.selected}/{slot.max_count})"
             logger.warning(msg)
             return {"success": False, "info": msg, "slot": slot, "full": True}
 
@@ -355,6 +366,9 @@ class BookingEngine:
                 logger.info(f"🎉 捡漏成功！已完成预约: {res.get('info')}")
                 if status_callback:
                     status_callback(attempt, f"🎉 捡漏成功: {res.get('info')}")
+                return res
+
+            if res.get("skipped"):
                 return res
 
             if not res.get("full"):

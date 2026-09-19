@@ -1100,12 +1100,12 @@ class GymStatusHandler(BaseHTTPRequestHandler):
                 }
                 self._send_html(200, render_dashboard(fallback_data))
 
-def run_server(port: int = 8080, config_path: str = "config/config.yaml"):
+def run_server(port: int = 8080, config_path: str = "config/config.yaml", host: str = "0.0.0.0"):
     global _GLOBAL_CONFIG_PATH
     _GLOBAL_CONFIG_PATH = config_path
 
     try:
-        server = HTTPServer(("0.0.0.0", port), GymStatusHandler)
+        server = HTTPServer((host, port), GymStatusHandler)
     except OSError as e:
         logger.warning(f"本地 Web 服务端口 {port} 已被占用，服务已处于运行中: {e}")
         print(f"\n⚠️ 本地 Web 服务端口 {port} 已被占用，服务已在运行中。\n")
