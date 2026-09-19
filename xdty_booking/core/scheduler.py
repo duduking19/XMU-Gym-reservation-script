@@ -17,6 +17,21 @@ from xdty_booking.notify.notifier import Notifier
 
 logger = logging.getLogger(__name__)
 
+def next_scheduled_booking(cfg: AppConfig, now: datetime, target_time: Optional[str] = None):
+    """返回下次开抢时间、入场日期和时段；星期按入场日期计算。"""
+    hour, minute, second = map(int, (target_time or cfg.scheduler.target_time).split(":"))
+    run_at = now.replace(hour=hour, minute=minute, second=second, microsecond=0)
+    if run_at <= now:
+        run_at += timedelta(days=1)
+    for _ in range(7):
+        visit_date = (run_at + timedelta(days=cfg.target.target_date_offset)).date()
+        slot = (cfg.scheduler.weekly_plan.get(str(visit_date.isoweekday()))
+                if cfg.scheduler.weekly_enabled else cfg.target.preferred_time)
+        if slot:
+            return run_at, visit_date.isoformat(), slot
+        run_at += timedelta(days=1)
+    raise ValueError("每周计划至少需要设置一天")
+
 def set_windows_keep_awake(enable: bool = True):
     """
     通过 Windows 底层 kernel32.SetThreadExecutionState 控制电源睡眠状态。
@@ -72,6 +87,8 @@ class BookingScheduler:
         self.harvest_service = HarvestService(config, config_path=config_path)
         self._stop_event = threading.Event()
         self.status_callback: Optional[Callable[[str], None]] = None
+        self.next_booking = None
+        self.last_result = None
 
     def stop(self):
         """手动取消/停止定时调度守护"""
@@ -122,6 +139,23 @@ class BookingScheduler:
             return False
 
     def run(self, target_time: Optional[str] = None) -> Dict[str, Any]:
+        after = datetime.now()
+        while not self._stop_event.is_set():
+            self.next_booking = next_scheduled_booking(self.cfg, after, target_time)
+            try:
+                self.last_result = self._run_once(target_time)
+            except Exception as e:
+                if not self.cfg.scheduler.weekly_enabled:
+                    raise
+                logger.exception("本次每周计划预约异常，将继续下一个计划日")
+                self.last_result = {"success": False, "info": str(e)}
+            if not self.cfg.scheduler.weekly_enabled:
+                return self.last_result
+            # 提前毫秒提交或失败重试结束时，不能再次选中同一开抢时刻。
+            after = max(datetime.now(), self.next_booking[0])
+        return {"success": False, "info": "定时任务已被手动终止"}
+
+    def _run_once(self, target_time: Optional[str] = None) -> Dict[str, Any]:
         if self._stop_event.is_set():
             return {"success": False, "info": "定时任务已被手动终止"}
         target_time_str = target_time or self.cfg.scheduler.target_time or "07:00:00"
@@ -132,11 +166,7 @@ class BookingScheduler:
 
         try:
             # 计算目标时间
-            now = datetime.now()
-            target_hour, target_minute, target_second = map(int, target_time_str.split(":"))
-            target_dt = now.replace(hour=target_hour, minute=target_minute, second=target_second, microsecond=0)
-            if target_dt <= now:
-                target_dt += timedelta(days=1)
+            target_dt, visit_date, preferred_time = self.next_booking or next_scheduled_booking(self.cfg, datetime.now(), target_time)
 
             target_ts = target_dt.timestamp()
             pre_check_minutes = max(1, self.cfg.scheduler.pre_check_minutes)
@@ -145,7 +175,7 @@ class BookingScheduler:
             logger.info(f"📅 下一个目标抢票时刻: {target_dt.strftime('%Y-%m-%d %H:%M:%S')}")
             logger.info(f"⏱️ 提前自检预热时刻: {pre_check_dt.strftime('%Y-%m-%d %H:%M:%S')} (提前 {pre_check_minutes} 分钟)")
             if self.status_callback:
-                self.status_callback(f"定时守护中：目标抢票时刻 {target_dt.strftime('%m-%d %H:%M:%S')}，将在 {pre_check_dt.strftime('%H:%M:%S')} 预检凭据")
+                self.status_callback(f"等待 {target_dt.strftime('%m-%d %H:%M:%S')} 开抢，预约 {visit_date} {preferred_time}")
 
             # 1. 如果当前距离预检时间尚早，进入纯静默休眠（免打扰，不发心跳、不弹微信、不改代理）
             if datetime.now() < pre_check_dt:
@@ -175,6 +205,9 @@ class BookingScheduler:
 
             if self._stop_event.is_set():
                 return {"success": False, "info": "定时任务已被手动终止"}
+
+            if self.cfg.scheduler.weekly_enabled and datetime.now() > target_dt + timedelta(minutes=1):
+                return {"success": False, "info": "已错过本次开抢时间，继续等待下一个计划日"}
 
             # 2. 到达预检时刻：仅在此刻全面执行 Session 存活探测与失效自愈 (此时捕获的凭证最新鲜有效)
             logger.info(f"🔍 到达抢票前预检时刻 ({datetime.now().strftime('%H:%M:%S')})，检查凭证有效性...")
@@ -206,6 +239,8 @@ class BookingScheduler:
 
             if self._stop_event.is_set():
                 return {"success": False, "info": "定时任务已被手动终止"}
+            if self.cfg.scheduler.weekly_enabled and datetime.now() > target_dt + timedelta(minutes=1):
+                return {"success": False, "info": "已错过本次开抢时间，继续等待下一个计划日"}
 
             # 5. 准点瞬间：极速并发抢票！
             logger.info(f"⚡ [准点] {datetime.now().strftime('%H:%M:%S')} 到达放号时刻！立即执行极速抢票！")
@@ -219,7 +254,9 @@ class BookingScheduler:
                 on_session_expired=self.ensure_valid_session
             )
             res = engine.execute_booking(
-                fallback_nearest=self.cfg.scheduler.fallback_nearest,
+                target_date=visit_date,
+                preferred_time=preferred_time,
+                fallback_nearest=False if self.cfg.scheduler.weekly_enabled else self.cfg.scheduler.fallback_nearest,
                 mode="早7点准点抢票"
             )
             

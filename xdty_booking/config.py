@@ -1,4 +1,5 @@
 import os
+import re
 import yaml
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
@@ -34,6 +35,24 @@ class SchedulerConfig:
     retry_interval_ms: int = 150
     fallback_nearest: bool = True       # 首选时段无名额时是否自动选择最近时段
     pre_check_minutes: int = 5          # 抢票前提前自检并尝试自愈 Session 的分钟数
+    weekly_enabled: bool = False
+    weekly_plan: Dict[str, str] = field(default_factory=dict)  # 入场日期：1=周一，7=周日
+
+    def __post_init__(self):
+        if not isinstance(self.weekly_enabled, bool) or not isinstance(self.weekly_plan, dict):
+            raise ValueError("每周计划格式错误")
+        plan = {}
+        for day, slot in self.weekly_plan.items():
+            if str(day) not in "1 2 3 4 5 6 7".split():
+                raise ValueError("每周计划的星期必须是 1（周一）至 7（周日）")
+            if not isinstance(slot, str) or not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d-(?:[01]\d|2[0-3]):[0-5]\d", slot):
+                raise ValueError("计划时段格式应为 HH:MM-HH:MM，例如 16:30-18:00")
+            if slot[:5] >= slot[6:]:
+                raise ValueError("计划时段结束时间必须晚于开始时间")
+            plan[str(day)] = slot
+        if self.weekly_enabled and not plan:
+            raise ValueError("每周计划至少需要设置一天")
+        self.weekly_plan = plan
 
 @dataclass
 class EmailConfig:
@@ -58,14 +77,20 @@ class BarkConfig:
     device_key: str = ""
 
 @dataclass
+class FeishuConfig:
+    webhook_url: str = ""
+    secret: str = ""  # 机器人开启签名校验时填写
+
+@dataclass
 class NotifyConfig:
     enabled: bool = False
-    channel: str = "pushplus"  # email, pushplus, serverchan, bark, all
+    channel: str = "pushplus"  # email, pushplus, serverchan, bark, feishu, all
     title_prefix: str = "【厦大体育馆预约】"
     email: EmailConfig = field(default_factory=EmailConfig)
     pushplus: PushPlusConfig = field(default_factory=PushPlusConfig)
     serverchan: ServerChanConfig = field(default_factory=ServerChanConfig)
     bark: BarkConfig = field(default_factory=BarkConfig)
+    feishu: FeishuConfig = field(default_factory=FeishuConfig)
 
 @dataclass
 class AppConfig:
@@ -103,9 +128,10 @@ def load_config(config_path: str = "config/config.yaml") -> AppConfig:
     pushplus_cfg = _build_dataclass(PushPlusConfig, pushplus_raw)
     serverchan_cfg = _build_dataclass(ServerChanConfig, notify_data.get("serverchan"))
     bark_cfg = _build_dataclass(BarkConfig, notify_data.get("bark"))
+    feishu_cfg = _build_dataclass(FeishuConfig, notify_data.get("feishu"))
 
     notify_field_names = {f for f in NotifyConfig.__dataclass_fields__}
-    filtered_notify = {k: v for k, v in notify_data.items() if k in notify_field_names and k not in ("email", "pushplus", "serverchan", "bark")}
+    filtered_notify = {k: v for k, v in notify_data.items() if k in notify_field_names and k not in ("email", "pushplus", "serverchan", "bark", "feishu")}
     
     # 若用户未显式配置 enabled，但填写了任意推送 token，则自动启用通知
     if "enabled" not in filtered_notify:
@@ -113,7 +139,8 @@ def load_config(config_path: str = "config/config.yaml") -> AppConfig:
             pushplus_cfg.token or
             email_cfg.sender or
             serverchan_cfg.sendkey or
-            bark_cfg.device_key
+            bark_cfg.device_key or
+            feishu_cfg.webhook_url
         )
         filtered_notify["enabled"] = has_any_token
 
@@ -122,6 +149,7 @@ def load_config(config_path: str = "config/config.yaml") -> AppConfig:
         pushplus=pushplus_cfg,
         serverchan=serverchan_cfg,
         bark=bark_cfg,
+        feishu=feishu_cfg,
         **filtered_notify
     )
 
@@ -223,8 +251,9 @@ def save_target_and_scheduler_config(
             data["scheduler"] = {}
         data["scheduler"].update(scheduler_updates)
 
+    # 先验证合并后的计划，非法输入不能覆盖原配置或登录凭据。
+    _build_dataclass(SchedulerConfig, data.get("scheduler", {}))
     new_content = yaml.dump(data, allow_unicode=True, sort_keys=False)
     with open(config_path, "w", encoding="utf-8") as f:
         f.write(new_content)
     return True
-

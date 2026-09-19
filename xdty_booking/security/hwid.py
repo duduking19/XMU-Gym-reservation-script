@@ -8,8 +8,11 @@
 import os
 import sys
 import hashlib
+import plistlib
 import subprocess
-import winreg
+import uuid
+if sys.platform == "win32":
+    import winreg
 from typing import Dict, Optional, Tuple
 
 _CACHED_HWID: Optional[str] = None
@@ -122,6 +125,23 @@ def get_hardware_info() -> Dict[str, str]:
     """采集原始硬件标识明细字典"""
     global _CACHED_DETAILS
     if _CACHED_DETAILS is not None:
+        return _CACHED_DETAILS
+
+    if sys.platform != "win32":
+        # macOS 使用系统硬件 UUID，避免网卡不可见时 uuid.getnode() 随机回退。
+        if sys.platform == "darwin":
+            result = subprocess.run(
+                ["/usr/sbin/ioreg", "-rd1", "-c", "IOPlatformExpertDevice", "-a"],
+                capture_output=True, check=True, timeout=5,
+            )
+            motherboard_uuid = plistlib.loads(result.stdout)[0]["IOPlatformUUID"]
+        else:
+            motherboard_uuid = f"{uuid.getnode():012X}"
+        _CACHED_DETAILS = {
+            "motherboard_uuid": motherboard_uuid,
+            "cpu_id": os.uname().machine,
+            "disk_serial": "UNKNOWN_DISK",
+        }
         return _CACHED_DETAILS
 
     mb, cpu, disk = _query_powershell_hardware()

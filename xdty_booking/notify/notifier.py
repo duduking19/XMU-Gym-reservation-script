@@ -1,6 +1,10 @@
+import base64
+import hashlib
+import hmac
 import json
 import logging
 import smtplib
+import time
 from email.header import Header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -14,7 +18,7 @@ logger = logging.getLogger(__name__)
 class Notifier:
     """
     统一即时通知分发引擎：
-    支持 PushPlus (微信推送)、邮件 (SMTP)、Server酱 Turbo、Bark (iOS 锁屏)。
+    支持 PushPlus (微信推送)、邮件 (SMTP)、Server酱 Turbo、Bark (iOS 锁屏)、飞书群机器人。
     """
     def __init__(self, config: NotifyConfig):
         self.cfg = config
@@ -51,6 +55,9 @@ class Notifier:
         # Bark
         if channel in ("bark", "all") and self.cfg.bark.device_key:
             results["bark"] = self._send_bark(full_title, content)
+
+        if channel in ("feishu", "all") and self.cfg.feishu.webhook_url:
+            results["feishu"] = self._send_feishu(full_title, content)
 
         if not results:
             logger.warning("未配置任何可用的通知通道或凭证为空，请检查 config.yaml 中的 notify 配置")
@@ -146,6 +153,34 @@ class Notifier:
         except Exception as e:
             logger.error(f"❌ Bark 推送异常: {e}")
             return False
+
+    def _send_feishu(self, title: str, content: str) -> bool:
+        """飞书自定义机器人文本推送，支持可选的签名校验。"""
+        try:
+            payload = {
+                "msg_type": "text",
+                "content": {"text": f"{title}\n\n{content}"},
+            }
+            if self.cfg.feishu.secret:
+                timestamp = str(int(time.time()))
+                # 飞书使用「秒级时间戳 + 换行 + 密钥」作为 HMAC key，消息为空。
+                key = f"{timestamp}\n{self.cfg.feishu.secret}".encode("utf-8")
+                payload["timestamp"] = timestamp
+                payload["sign"] = base64.b64encode(
+                    hmac.new(key, b"", hashlib.sha256).digest()
+                ).decode("ascii")
+            resp = requests.post(self.cfg.feishu.webhook_url, json=payload, timeout=10)
+            resp.raise_for_status()
+            result = resp.json()
+            if isinstance(result, dict) and result.get("code") == 0:
+                logger.info("✅ 飞书推送成功！")
+                return True
+            code = result.get("code") if isinstance(result, dict) else None
+            logger.error("❌ 飞书推送失败，错误码: %s（请检查机器人安全设置及配置）", code)
+        except Exception as e:
+            # requests 的异常可能含完整 Webhook URL，避免将机器人凭证写入日志。
+            logger.error("❌ 飞书推送异常: %s", type(e).__name__)
+        return False
 
     def send_booking_success(self, slot_info: Dict[str, Any], order_info: Optional[Dict[str, Any]] = None) -> Dict[str, bool]:
         """

@@ -43,7 +43,7 @@ def build_cli_parser():
   python main.py relogin                   # 方案 A：纯 HTTP 调用 checkLogin 换取新 Session
   python main.py harvest                   # 启动本地代理自动嗅探截获小程序凭证 (兜底)
   python main.py heartbeat                 # 启动心跳守护进程保持 Session 不超时
-  python main.py test-notify               # 发送测试通知，验证微信/邮件推送配置
+  python main.py test-notify               # 发送测试通知，验证微信/飞书/邮件推送配置
   python main.py test-captcha              # 测试验证码获取与离线识别
   python main.py launch-wechat             # 测试 Windows 微信小程序静默唤醒
 """

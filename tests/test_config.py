@@ -38,6 +38,28 @@ def test_load_config_file_not_found():
     with pytest.raises(FileNotFoundError):
         load_config("non_existent_config.yaml")
 
+@pytest.mark.parametrize("enabled, expected", [("", True), ("  enabled: false\n", False)])
+def test_load_feishu_config(tmp_path, enabled, expected):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        "notify:\n" + enabled + """  channel: feishu
+  feishu:
+    webhook_url: https://open.feishu.cn/open-apis/bot/v2/hook/test
+    secret: test-secret
+""", encoding="utf-8")
+    cfg = load_config(str(config_file))
+    assert cfg.notify.enabled is expected
+    assert cfg.notify.channel == "feishu"
+    assert cfg.notify.feishu.webhook_url.endswith("/hook/test")
+    assert cfg.notify.feishu.secret == "test-secret"
+
+def test_empty_feishu_config_does_not_enable_notifications(tmp_path):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text('notify:\n  channel: feishu\n  feishu: {}\n', encoding="utf-8")
+    cfg = load_config(str(config_file))
+    assert cfg.notify.enabled is False
+    assert cfg.notify.feishu.webhook_url == ""
+
 def test_load_minimal_config(tmp_path):
     config_file = tmp_path / "config.minimal.yaml"
     config_file.write_text("""
@@ -83,5 +105,4 @@ def test_ensure_config_path_auto_creates(tmp_path, monkeypatch):
     res = _ensure_config_path(target)
     assert os.path.exists(target)
     assert res == target
-
 

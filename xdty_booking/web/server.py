@@ -19,7 +19,7 @@ from xdty_booking.auth.session_manager import SessionManager
 from xdty_booking.auth.harvester_service import HarvestService
 from xdty_booking.solver.captcha_solver import CaptchaSolver
 from xdty_booking.core.booking_engine import BookingEngine
-from xdty_booking.core.scheduler import BookingScheduler
+from xdty_booking.core.scheduler import BookingScheduler, next_scheduled_booking
 from xdty_booking.notify.notifier import Notifier
 from xdty_booking.web.template import render_dashboard, render_qr_login_page
 from xdty_booking.utils.logger import setup_logger
@@ -102,6 +102,10 @@ class SchedulerManager:
                 self._is_running = False
                 if not self._last_result and self._status_text.startswith("正在启动"):
                     self._status_text = "定时任务已结束"
+            upcoming = getattr(self._scheduler, "next_booking", None)
+            if isinstance(upcoming, tuple):
+                self._next_run_dt = upcoming[0].strftime("%Y-%m-%d %H:%M:%S")
+                self._preferred_time = upcoming[2]
             return {
                 "running": self._is_running,
                 "status_text": self._status_text,
@@ -109,13 +113,14 @@ class SchedulerManager:
                 "next_run_dt": self._next_run_dt,
                 "stadium_name": self._stadium_name,
                 "preferred_time": self._preferred_time,
-                "last_result": self._last_result
+                "target_date": upcoming[1] if isinstance(upcoming, tuple) else "",
+                "last_result": (getattr(self._scheduler, "last_result", None) or self._last_result)
             }
 
     def start(self, config_path: str = _GLOBAL_CONFIG_PATH) -> Dict[str, Any]:
         with self._lock:
-            if self._is_running and self._thread and self._thread.is_alive():
-                return {"success": False, "info": "定时任务已在运行中，请勿重复启动"}
+            if self._thread and self._thread.is_alive():
+                return {"success": False, "info": "定时任务仍在运行或停止中，请停止并等待结束后再修改计划"}
 
             c_path = _ensure_config_path(config_path)
             cfg = load_config(c_path)
@@ -148,6 +153,8 @@ class SchedulerManager:
             self._preferred_time = cfg.target.preferred_time
             self._status_text = f"定时守护中：将在早 {self._target_time} 执行准点抢票"
             self._last_result = None
+            scheduler.next_booking = next_scheduled_booking(cfg, datetime.now())
+            self._next_run_dt = scheduler.next_booking[0].strftime("%Y-%m-%d %H:%M:%S")
 
             def _status_cb(msg: str):
                 with self._lock:
@@ -175,13 +182,6 @@ class SchedulerManager:
             self._thread = t
             self._is_running = True
             t.start()
-
-            now = datetime.now()
-            target_hour, target_minute, target_second = map(int, self._target_time.split(":"))
-            target_dt = now.replace(hour=target_hour, minute=target_minute, second=target_second, microsecond=0)
-            if target_dt <= now:
-                target_dt += timedelta(days=1)
-            self._next_run_dt = target_dt.strftime("%Y-%m-%d %H:%M:%S")
 
             return {
                 "success": True,
@@ -464,18 +464,22 @@ def query_gym_status(config_path: Optional[str] = None, auto_heal: bool = True) 
         "scheduler_config": {
             "target_time": cfg.scheduler.target_time,
             "fallback_nearest": cfg.scheduler.fallback_nearest,
-            "pre_check_minutes": cfg.scheduler.pre_check_minutes
+            "pre_check_minutes": cfg.scheduler.pre_check_minutes,
+            "weekly_enabled": cfg.scheduler.weekly_enabled,
+            "weekly_plan": cfg.scheduler.weekly_plan
         }
     }
 
     if intervals and hasattr(intervals, "time_slot_list"):
         data["date_list"] = [{"date": d.date, "week": d.week} for d in getattr(intervals, "date_list", [])]
         for g in intervals.time_slot_list:
+            preferred_time = (cfg.scheduler.weekly_plan.get(str(datetime.fromisoformat(g.date).isoweekday()))
+                              if cfg.scheduler.weekly_enabled else cfg.target.preferred_time)
             group_data = {
                 "date": g.date,
                 "week_name": g.week_name,
                 "time_range": g.time_range,
-                "is_preferred": (g.time_range == cfg.target.preferred_time),
+                "is_preferred": (g.time_range == preferred_time),
                 "slots": []
             }
             for s in g.slots:
@@ -652,6 +656,9 @@ class GymStatusHandler(BaseHTTPRequestHandler):
 
     def _handle_scheduler_config_save(self, body_json: dict, params: dict):
         try:
+            if _scheduler_manager._thread and _scheduler_manager._thread.is_alive():
+                self._send_json(409, {"success": False, "info": "请先停止正在运行的定时任务，再修改计划并重新开启"})
+                return
             c_path = _ensure_config_path(_GLOBAL_CONFIG_PATH)
             target = body_json.get("target") or {}
             scheduler = body_json.get("scheduler") or {}
@@ -683,12 +690,17 @@ class GymStatusHandler(BaseHTTPRequestHandler):
 
             save_target_and_scheduler_config(c_path, target_updates=target, scheduler_updates=scheduler)
             self._send_json(200, {"success": True, "info": "定时预约配置已保存成功！"})
+        except ValueError as e:
+            self._send_json(400, {"success": False, "info": str(e)})
         except Exception as e:
             logger.error(f"保存定时配置异常: {e}", exc_info=True)
             self._send_json(500, {"success": False, "info": str(e)})
 
     def _handle_scheduler_start(self, body_json: dict, params: dict):
         try:
+            if _scheduler_manager._thread and _scheduler_manager._thread.is_alive():
+                self._send_json(409, {"success": False, "info": "定时任务仍在运行或停止中，请等待结束后再开启"})
+                return
             c_path = _ensure_config_path(_GLOBAL_CONFIG_PATH)
             target = body_json.get("target")
             scheduler = body_json.get("scheduler")
@@ -697,6 +709,8 @@ class GymStatusHandler(BaseHTTPRequestHandler):
 
             res = _scheduler_manager.start(c_path)
             self._send_json(200, res)
+        except ValueError as e:
+            self._send_json(400, {"success": False, "info": str(e)})
         except Exception as e:
             logger.error(f"启动定时任务异常: {e}", exc_info=True)
             self._send_json(500, {"success": False, "info": str(e)})
@@ -728,7 +742,9 @@ class GymStatusHandler(BaseHTTPRequestHandler):
                 "scheduler": {
                     "target_time": cfg.scheduler.target_time,
                     "fallback_nearest": cfg.scheduler.fallback_nearest,
-                    "pre_check_minutes": cfg.scheduler.pre_check_minutes
+                    "pre_check_minutes": cfg.scheduler.pre_check_minutes,
+                    "weekly_enabled": cfg.scheduler.weekly_enabled,
+                    "weekly_plan": cfg.scheduler.weekly_plan
                 }
             })
         except Exception as e:

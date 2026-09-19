@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from html import escape
 from xdty_booking.security.auth import get_auth_status
 
 def render_dashboard(data: dict) -> str:
@@ -34,6 +35,8 @@ def render_dashboard(data: dict) -> str:
     scheduler_config = data.get("scheduler_config", {})
     is_sched_running = scheduler_status.get("running", False)
     current_target_time = scheduler_config.get("target_time", "07:00:00")
+    weekly_enabled = scheduler_config.get("weekly_enabled", False)
+    weekly_plan = scheduler_config.get("weekly_plan", {})
     current_pref_time = target_config.get("preferred_time", "19:30-21:00")
     current_stadium_id = target_config.get("stadium_id", 16)
     current_venue_id = target_config.get("venue_id", 14)
@@ -71,6 +74,14 @@ def render_dashboard(data: dict) -> str:
         f'<button type="button" class="time-chip {"active" if current_pref_time == t[0] else ""}" data-val="{t[0]}" onclick="setTimeChip(\'{t[0]}\')">{t[1]}</button>'
         for t in preset_times
     ])
+    weekly_rows_html = "".join(
+        f'<label for="weeklyDay{day}" style="align-self: center; font-weight: 600;">{name}</label>'
+        f'<input id="weeklyDay{day}" class="form-input" list="weeklyTimeOptions" '
+        f'aria-label="{name}预约时段" placeholder="不预约（留空）" '
+        f'value="{escape(weekly_plan.get(str(day), ""), quote=True)}">'
+        for day, name in enumerate(["周一", "周二", "周三", "周四", "周五", "周六", "周日"], 1)
+    )
+    weekly_options_html = "".join(f'<option value="{slot}"></option>' for slot, _ in preset_times)
     snipe_time_chips_html = "".join([
         f'<button type="button" class="time-chip {"active" if current_pref_time == t[0] else ""}" data-val="{t[0]}" onclick="setSnipeTime(\'{t[0]}\')">{t[1]}</button>'
         for t in preset_times
@@ -1078,8 +1089,8 @@ def render_dashboard(data: dict) -> str:
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 13px; color: #1e293b;">
                         <div><strong>📍 预约地点:</strong> <span id="infoStadiumName">{stadium_name}</span></div>
                         <div><strong>🕒 目标时段:</strong> <span id="infoPrefTime">{current_pref_time}</span></div>
-                        <div><strong>📅 预约场次:</strong> <span>第二天 (次日场地)</span></div>
-                        <div><strong>⏰ 开抢时刻:</strong> <span>明天早 07:00:00</span></div>
+                        <div><strong>📅 入场日期:</strong> <span id="infoVisitDate">—</span></div>
+                        <div><strong>⏰ 开抢时刻:</strong> <span id="infoRunAt">—</span></div>
                     </div>
                     <div id="infoStatusDesc" style="font-size: 12px; color: #15803d; margin-top: 10px; padding-top: 8px; border-top: 1px dashed #bbf7d0;">
                         {scheduler_status.get('status_text', '将在早 07:00:00 准点为您极速提交预约')}
@@ -1116,8 +1127,20 @@ def render_dashboard(data: dict) -> str:
                     <input type="hidden" id="schedUserRange" value="{current_user_range}">
                 </div>
 
-                <!-- 表单项 2: 目标预约时段 -->
                 <div class="form-group">
+                    <label class="form-label" for="schedWeeklyEnabled">
+                        <span><input type="checkbox" id="schedWeeklyEnabled" {'checked' if weekly_enabled else ''} onchange="toggleWeeklyPlan()"> 按每周计划循环预约</span>
+                    </label>
+                    <div id="weeklyPlanFields" style="display: {'block' if weekly_enabled else 'none'};">
+                        <p style="font-size: 13px; color: #475569; line-height: 1.7;">按<strong>实际入场日期</strong>填写；留空表示当天不预约。周六的场次在周五 07:00 开抢。每次结束后继续等待下一计划日，严格预约所填时段，满额不改约其他时段。</p>
+                        <div style="display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 8px;">{weekly_rows_html}</div>
+                        <datalist id="weeklyTimeOptions">{weekly_options_html}</datalist>
+                        <p style="font-size: 12px; color: #64748b;">时段格式：16:30-18:00。修改运行中的计划，请先停止，再保存并重新开启。电脑需保持唤醒，服务重启后需重新开启。</p>
+                    </div>
+                </div>
+
+                <!-- 单次定时预约时段 -->
+                <div class="form-group" id="singleScheduleFields" style="display: {'none' if weekly_enabled else 'block'};">
                     <div class="form-label">
                         <span>🕒 目标预约时段 (想约的健身时间)</span>
                         <span style="font-size: 12px; font-weight: normal; color: #64748b;">快捷选择或在下方手动修改</span>
@@ -1131,13 +1154,13 @@ def render_dashboard(data: dict) -> str:
                 </div>
 
                 <!-- 隐藏的固定抢票时刻与目标日期 (默认早7点，次日场地，不向用户暴露) -->
-                <input type="hidden" id="schedTargetTimeInput" value="07:00:00">
-                <input type="hidden" id="schedTargetDateOffset" value="1">
+                <input type="hidden" id="schedTargetTimeInput" value="{current_target_time}">
+                <input type="hidden" id="schedTargetDateOffset" value="{target_config.get('target_date_offset', 1)}">
 
                 <!-- 表单项 3: 辅助选项 -->
                 <div style="padding: 12px; background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0; margin-top: 6px;">
                     <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; color: #334155; cursor: pointer;">
-                        <input type="checkbox" id="schedFallbackNearest" checked style="cursor: pointer;">
+                        <input type="checkbox" id="schedFallbackNearest" {'checked' if scheduler_config.get('fallback_nearest', True) and not weekly_enabled else ''} {'disabled' if weekly_enabled else ''} style="cursor: pointer;">
                         <span>首选时段满额时，自动就近选择相邻时段降级抢票（极大提高成功率）</span>
                     </label>
                 </div>
@@ -1155,7 +1178,7 @@ def render_dashboard(data: dict) -> str:
                 <div style="display: flex; gap: 8px;">
                     <button type="button" class="btn-action" onclick="closeSchedulerModal()">关闭</button>
                     <button type="button" class="btn-action btn-primary" id="btnStartScheduler" onclick="startSchedulerTask()" style="font-weight: 700; padding: 8px 18px;">
-                        {'🔄 更新预约设置' if is_sched_running else '🚀 开启定时预约'}
+                        {'请先停止再修改计划' if is_sched_running else '🚀 开启定时预约'}
                     </button>
                 </div>
             </div>
@@ -1607,6 +1630,15 @@ def render_dashboard(data: dict) -> str:
 
         let currentSchedulerRunning = false;
 
+        function toggleWeeklyPlan() {{
+            const enabled = document.getElementById("schedWeeklyEnabled").checked;
+            document.getElementById("weeklyPlanFields").style.display = enabled ? "block" : "none";
+            document.getElementById("singleScheduleFields").style.display = enabled ? "none" : "block";
+            const fallback = document.getElementById("schedFallbackNearest");
+            fallback.disabled = enabled;
+            if (enabled) fallback.checked = false;
+        }}
+
         function openSchedulerModal() {{
             const modal = document.getElementById("schedulerModal");
             if (modal) modal.style.display = "flex";
@@ -1671,6 +1703,8 @@ def render_dashboard(data: dict) -> str:
                     schedWrap.innerHTML = xianganTimes.map(t => `<button type="button" class="time-chip ${{curVal === t[0] ? 'active' : ''}}" data-val="${{t[0]}}" onclick="setTimeChip('${{t[0]}}')">${{t[1]}}</button>`).join("");
                 }}
             }}
+            document.getElementById("weeklyTimeOptions").innerHTML = (key === "siming" ? simingTimes : xianganTimes)
+                .map(t => `<option value="${{t[0]}}"></option>`).join("");
         }}
 
         function setTimeChip(val) {{
@@ -1715,11 +1749,14 @@ def render_dashboard(data: dict) -> str:
                 if (infoStadium && data.stadium_name) infoStadium.innerText = data.stadium_name;
                 if (infoPref && data.preferred_time) infoPref.innerText = data.preferred_time;
                 if (infoDesc && data.status_text) infoDesc.innerText = data.status_text;
+                document.getElementById("infoVisitDate").innerText = data.target_date || "—";
+                document.getElementById("infoRunAt").innerText = data.next_run_dt || "—";
+                if (btnStart) btnStart.disabled = isRunning;
 
                 if (isRunning) {{
                     if (infoCard) infoCard.style.display = "block";
                     if (btnStop) btnStop.style.display = "inline-block";
-                    if (btnStart) btnStart.innerText = "🔄 更新预约设置";
+                    if (btnStart) btnStart.innerText = "请先停止再修改计划";
                 }} else {{
                     if (infoCard) infoCard.style.display = "none";
                     if (btnStop) btnStop.style.display = "none";
@@ -1739,6 +1776,12 @@ def render_dashboard(data: dict) -> str:
             const targetTime = (document.getElementById("schedTargetTimeInput").value || "07:00:00").trim();
             const dateOffset = parseInt(document.getElementById("schedTargetDateOffset").value || "1");
             const fallbackNearest = document.getElementById("schedFallbackNearest").checked;
+            const weeklyEnabled = document.getElementById("schedWeeklyEnabled").checked;
+            const weeklyPlan = {{}};
+            for (let day = 1; day <= 7; day++) {{
+                const slot = document.getElementById(`weeklyDay${{day}}`).value.trim();
+                if (slot) weeklyPlan[String(day)] = slot;
+            }}
 
             return {{
                 target: {{
@@ -1753,7 +1796,9 @@ def render_dashboard(data: dict) -> str:
                 }},
                 scheduler: {{
                     target_time: targetTime,
-                    fallback_nearest: fallbackNearest
+                    fallback_nearest: weeklyEnabled ? false : fallbackNearest,
+                    weekly_enabled: weeklyEnabled,
+                    weekly_plan: weeklyPlan
                 }}
             }};
         }}
@@ -2789,4 +2834,3 @@ def render_qr_login_page(is_already_logged_in: bool = False, phpsessid_masked: s
 </body>
 </html>
 """
-

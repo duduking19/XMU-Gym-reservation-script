@@ -186,6 +186,29 @@ target:
 
 ---
 
+## 📱 接收飞书预约成功提醒
+
+1. 在需要接收消息的飞书群中，打开「群设置 → 群机器人 → 添加机器人 → 自定义机器人」，复制 Webhook 地址。
+2. 按需开启机器人的「签名校验」，并复制密钥。接入方式参考[飞书官方机器人指南](https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot)。
+3. 修改 `config/config.yaml` 中已有的 `notify` 配置（不要重复添加第二个 `notify`）：
+
+   ```yaml
+   notify:
+     enabled: true
+     channel: "feishu"
+     feishu:
+       webhook_url: "https://open.feishu.cn/open-apis/bot/v2/hook/你的机器人地址"
+       secret: ""  # 开启签名校验时填写，否则留空
+   ```
+
+4. 重启程序后，使用项目 Python 环境执行 `python main.py test-notify`。收到测试消息后，手动预约、定时预约和捡漏成功都会自动发送场馆、日期、时段等信息。
+
+如果机器人设置了关键词校验，可设置关键词「厦大体育馆预约」，它包含在默认消息标题前缀中。若自定义了 `title_prefix`，请确保它包含机器人要求的关键词。签名校验要求运行程序的电脑时间准确。
+
+需要同时接收微信和飞书通知时，设置 `channel: "all"`，并保留 PushPlus Token 和飞书配置。Webhook 地址和签名密钥属于凭证，请勿公开。发送失败会记录到日志，不影响已成功的预约。
+
+---
+
 ## 🛠️ 常用进阶命令清单 (CLI 极客指南)
 
 除了通过 Web 界面和批处理，你也可以直接在命令行终端使用以下完整指令：
@@ -201,7 +224,7 @@ target:
 | **HTTP 一键续登** | `python main.py relogin` | 使用长效 Token 发起纯 HTTP checkLogin 刷新 Cookie |
 | **启动微信嗅探** | `python main.py harvest` | 启动本地代理截获微信小程序通信凭证 |
 | **Session 保活心跳** | `python main.py heartbeat` | 周期性发送轻量心跳请求防止 Cookie 超时 |
-| **测试微信推送** | `python main.py test-notify` | 向绑定的微信发送一条测试消息卡片 |
+| **测试通知推送** | `python main.py test-notify` | 向已配置的微信、飞书、邮件等通道发送测试消息 |
 | **测试离线 OCR** | `python main.py test-captcha` | 测试本地离线验证码识别速度与识别率 |
 
 ---

@@ -70,7 +70,7 @@ scheduler:
 notify:
   # 是否开启抢票成功通知
   enabled: false
-  # 通道模式: pushplus (微信推送), email (邮件), serverchan (Server酱), bark (iOS锁屏), all (全部启用)
+  # 通道模式: pushplus (微信推送), email (邮件), serverchan (Server酱), bark (iOS锁屏), feishu (飞书群机器人), all (全部启用)
   channel: "pushplus"
   # 消息标题前缀
   title_prefix: "【厦大体育馆预约】"
@@ -96,3 +96,8 @@ notify:
   bark:
     server_url: "https://api.day.app"
     device_key: ""
+
+  # 5. 飞书群自定义机器人（群设置 → 群机器人 → 添加机器人 → 自定义机器人）
+  feishu:
+    webhook_url: ""  # 完整地址：https://open.feishu.cn/open-apis/bot/v2/hook/...
+    secret: ""       # 开启签名校验时填写机器人的密钥，否则留空
