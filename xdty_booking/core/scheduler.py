@@ -5,7 +5,7 @@ import threading
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, Callable
 
-from xdty_booking.config import AppConfig
+from xdty_booking.config import AppConfig, load_config
 from xdty_booking.api.client import ApiClient
 from xdty_booking.api.endpoints import XdtyApi
 from xdty_booking.auth.session_manager import SessionManager
@@ -98,12 +98,45 @@ class BookingScheduler:
         if self.status_callback:
             self.status_callback("已手动停止定时任务")
 
+    def _adopt_file_credentials(self):
+        """网页登录可能发生在调度器启动之后，预检时以配置文件中的 PHPSESSID / auth_params 为准"""
+        try:
+            auth = load_config(self.config_path).auth
+        except Exception as e:
+            logger.debug(f"读取配置文件凭据失败，沿用内存配置: {e}")
+            return
+        if auth.phpsessid and auth.phpsessid != self.cfg.auth.phpsessid:
+            logger.info(f"🔁 检测到配置文件中有更新的 PHPSESSID ({auth.phpsessid[:8]}***)，采用之")
+            self.cfg.auth.phpsessid = auth.phpsessid
+            self.session_mgr.update_token(auth.phpsessid)
+            self.client.set_session_token(auth.phpsessid)
+        if auth.auth_params:
+            self.cfg.auth.auth_params = auth.auth_params
+            self.session_mgr.set_auth_params(auth.auth_params)
+
+    def _slots_reachable(self) -> bool:
+        """场次查询接口探测：仅“我的预约”查询成功不足以证明预约链路可用"""
+        t = self.cfg.target
+        try:
+            res = self.api.get_intervals(t.venue_id, t.stadium_id, t.category_id, t.user_range)
+        except Exception as e:
+            logger.warning(f"场次查询接口探测异常: {e}")
+            return False
+        if res.status != 1:
+            logger.warning(f"场次查询接口探测未通过: {res.info}")
+            return False
+        return True
+
     def ensure_valid_session(self, timeout: float = 30.0) -> bool:
-        """检查并确保登录态有效，若失效依次尝试：纯 HTTP 续登 -> 账号密码重新登录 -> 微信小程序嗅探捕获"""
+        """
+        检查并确保登录态有效：先以配置文件凭据为准，再同时探测“我的预约”与场次查询接口；
+        若失效依次尝试：纯 HTTP 续登 -> 账号密码重新登录 -> 微信小程序嗅探捕获
+        """
+        self._adopt_file_credentials()
         is_missing = not bool(self.cfg.auth.phpsessid)
-        is_alive = False if is_missing else self.session_mgr.check_alive()
+        is_alive = (not is_missing) and self.session_mgr.check_alive() and self._slots_reachable()
         if is_alive:
-            logger.info("✅ 当前 Session 凭证有效，无需自愈")
+            logger.info("✅ 登录凭证与场次查询接口均正常，无需自愈")
             return True
 
         reason = "未配置 PHPSESSID" if is_missing else "当前 PHPSESSID 已失效"
@@ -120,14 +153,13 @@ class BookingScheduler:
                     logger.info(f"✅ checkLogin 纯 HTTP 续登成功！新 PHPSESSID: {token_str[:8]}***")
                     return True
 
-        # 2. 统一身份认证账号密码重新登录
-        if self.cfg.auth.cas_username and self.cfg.auth.cas_password:
-            new_token = self.session_mgr.refresh_session_via_password()
-            if new_token:
-                self.client.set_session_token(new_token)
-                self.cfg.auth.phpsessid = new_token
-                logger.info(f"✅ 账号密码重新登录成功！新 PHPSESSID: {str(new_token)[:8]}***")
-                return True
+        # 2. 统一身份认证账号密码重新登录（账号密码由 SessionManager 从配置文件实时读取）
+        new_token = self.session_mgr.refresh_session_via_password()
+        if new_token:
+            self.client.set_session_token(new_token)
+            self.cfg.auth.phpsessid = new_token
+            logger.info(f"✅ 账号密码重新登录成功！新 PHPSESSID: {str(new_token)[:8]}***")
+            return True
 
         # 3. 微信小程序嗅探兜底
         if not self.cfg.auth.auto_harvest_enabled:
