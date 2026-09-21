@@ -39,22 +39,34 @@ class SchedulerConfig:
     pre_check_minutes: int = 5          # 抢票前提前自检并尝试自愈 Session 的分钟数
     weekly_enabled: bool = False
     weekly_plan: Dict[str, str] = field(default_factory=dict)  # 入场日期：1=周一，7=周日
+    date_overrides: Dict[str, str] = field(default_factory=dict)  # 特例：入场日期 YYYY-MM-DD -> 时段，优先于计划表
+
+    @staticmethod
+    def _check_slot(slot) -> str:
+        if not isinstance(slot, str) or not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d-(?:[01]\d|2[0-3]):[0-5]\d", slot):
+            raise ValueError("计划时段格式应为 HH:MM-HH:MM，例如 16:30-18:00")
+        if slot[:5] >= slot[6:]:
+            raise ValueError("计划时段结束时间必须晚于开始时间")
+        return slot
 
     def __post_init__(self):
-        if not isinstance(self.weekly_enabled, bool) or not isinstance(self.weekly_plan, dict):
+        if not isinstance(self.weekly_enabled, bool) or not isinstance(self.weekly_plan, dict) \
+                or not isinstance(self.date_overrides, dict):
             raise ValueError("每周计划格式错误")
         plan = {}
         for day, slot in self.weekly_plan.items():
             if str(day) not in "1 2 3 4 5 6 7".split():
                 raise ValueError("每周计划的星期必须是 1（周一）至 7（周日）")
-            if not isinstance(slot, str) or not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d-(?:[01]\d|2[0-3]):[0-5]\d", slot):
-                raise ValueError("计划时段格式应为 HH:MM-HH:MM，例如 16:30-18:00")
-            if slot[:5] >= slot[6:]:
-                raise ValueError("计划时段结束时间必须晚于开始时间")
-            plan[str(day)] = slot
+            plan[str(day)] = self._check_slot(slot)
         if self.weekly_enabled and not plan:
             raise ValueError("每周计划至少需要设置一天")
         self.weekly_plan = plan
+        overrides = {}
+        for day, slot in self.date_overrides.items():
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(day)):
+                raise ValueError("特例日期格式应为 YYYY-MM-DD")
+            overrides[str(day)] = self._check_slot(slot)
+        self.date_overrides = overrides
 
 @dataclass
 class EmailConfig:

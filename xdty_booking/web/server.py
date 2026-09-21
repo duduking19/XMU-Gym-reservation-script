@@ -20,7 +20,7 @@ from xdty_booking.auth.session_manager import SessionManager
 from xdty_booking.auth.harvester_service import HarvestService
 from xdty_booking.solver.captcha_solver import CaptchaSolver
 from xdty_booking.core.booking_engine import BookingEngine
-from xdty_booking.core.scheduler import BookingScheduler, next_scheduled_booking
+from xdty_booking.core.scheduler import BookingScheduler, next_scheduled_booking, planned_slot
 from xdty_booking.notify.notifier import Notifier
 from xdty_booking.web.template import render_dashboard, render_qr_login_page
 from xdty_booking.utils.logger import setup_logger
@@ -467,15 +467,15 @@ def query_gym_status(config_path: Optional[str] = None, auto_heal: bool = True) 
             "fallback_nearest": cfg.scheduler.fallback_nearest,
             "pre_check_minutes": cfg.scheduler.pre_check_minutes,
             "weekly_enabled": cfg.scheduler.weekly_enabled,
-            "weekly_plan": cfg.scheduler.weekly_plan
+            "weekly_plan": cfg.scheduler.weekly_plan,
+            "date_overrides": cfg.scheduler.date_overrides
         }
     }
 
     if intervals and hasattr(intervals, "time_slot_list"):
         data["date_list"] = [{"date": d.date, "week": d.week} for d in getattr(intervals, "date_list", [])]
         for g in intervals.time_slot_list:
-            preferred_time = (cfg.scheduler.weekly_plan.get(str(datetime.fromisoformat(g.date).isoweekday()))
-                              if cfg.scheduler.weekly_enabled else cfg.target.preferred_time)
+            preferred_time = planned_slot(cfg, g.date)
             group_data = {
                 "date": g.date,
                 "week_name": g.week_name,
@@ -691,6 +691,10 @@ class GymStatusHandler(BaseHTTPRequestHandler):
                             pass
                     scheduler[k] = val
 
+            if isinstance(scheduler.get("date_overrides"), dict):
+                today = datetime.now().date().isoformat()  # 已过期的特例日期自动清理
+                scheduler["date_overrides"] = {d: t for d, t in scheduler["date_overrides"].items() if str(d) >= today}
+
             save_target_and_scheduler_config(c_path, target_updates=target, scheduler_updates=scheduler)
             self._send_json(200, {"success": True, "info": "定时预约配置已保存成功！"})
         except ValueError as e:
@@ -747,7 +751,8 @@ class GymStatusHandler(BaseHTTPRequestHandler):
                     "fallback_nearest": cfg.scheduler.fallback_nearest,
                     "pre_check_minutes": cfg.scheduler.pre_check_minutes,
                     "weekly_enabled": cfg.scheduler.weekly_enabled,
-                    "weekly_plan": cfg.scheduler.weekly_plan
+                    "weekly_plan": cfg.scheduler.weekly_plan,
+                    "date_overrides": cfg.scheduler.date_overrides
                 }
             })
         except Exception as e:

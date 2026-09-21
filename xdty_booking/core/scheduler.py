@@ -17,6 +17,16 @@ from xdty_booking.notify.notifier import Notifier
 
 logger = logging.getLogger(__name__)
 
+def planned_slot(cfg: AppConfig, visit_date: str) -> Optional[str]:
+    """某入场日期应预约的时段：特例表优先，其次每周计划（按星期），非每周模式用固定时段。"""
+    override = cfg.scheduler.date_overrides.get(visit_date)
+    if override:
+        return override
+    if cfg.scheduler.weekly_enabled:
+        return cfg.scheduler.weekly_plan.get(str(datetime.fromisoformat(visit_date).isoweekday()))
+    return cfg.target.preferred_time
+
+
 def next_scheduled_booking(cfg: AppConfig, now: datetime, target_time: Optional[str] = None):
     """返回下次开抢时间、入场日期和时段；星期按入场日期计算。"""
     hour, minute, second = map(int, (target_time or cfg.scheduler.target_time).split(":"))
@@ -24,11 +34,10 @@ def next_scheduled_booking(cfg: AppConfig, now: datetime, target_time: Optional[
     if run_at <= now:
         run_at += timedelta(days=1)
     for _ in range(7):
-        visit_date = (run_at + timedelta(days=cfg.target.target_date_offset)).date()
-        slot = (cfg.scheduler.weekly_plan.get(str(visit_date.isoweekday()))
-                if cfg.scheduler.weekly_enabled else cfg.target.preferred_time)
+        visit_date = (run_at + timedelta(days=cfg.target.target_date_offset)).date().isoformat()
+        slot = planned_slot(cfg, visit_date)
         if slot:
-            return run_at, visit_date.isoformat(), slot
+            return run_at, visit_date, slot
         run_at += timedelta(days=1)
     raise ValueError("每周计划至少需要设置一天")
 

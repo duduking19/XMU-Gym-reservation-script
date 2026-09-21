@@ -163,3 +163,80 @@ def test_running_weekly_plan_exposes_visit_date_and_blocks_edits(tmp_path):
             manager._thread.join(timeout=2)
         assert not manager._thread.is_alive()
         assert manager.get_status()['running'] is False
+
+
+def test_date_override_replaces_planned_slot_without_touching_plan():
+    cfg = AppConfig(scheduler=SchedulerConfig(
+        weekly_enabled=True, weekly_plan={'3': '18:00-19:30'},
+        date_overrides={'2026-09-23': '15:00-16:30', '2026-09-25': '16:30-18:00'}))
+
+    # 09-23（周三）计划 18:00-19:30，特例改为 15:00-16:30
+    assert next_scheduled_booking(cfg, datetime(2026, 9, 21, 17)) == (datetime(2026, 9, 22, 7), '2026-09-23', '15:00-16:30')
+    # 09-25（周五）计划表没有，特例也能安排
+    assert next_scheduled_booking(cfg, datetime(2026, 9, 23, 17)) == (datetime(2026, 9, 24, 7), '2026-09-25', '16:30-18:00')
+    # 下周三回到计划表
+    assert next_scheduled_booking(cfg, datetime(2026, 9, 28, 17)) == (datetime(2026, 9, 29, 7), '2026-09-30', '18:00-19:30')
+    assert cfg.scheduler.weekly_plan == {'3': '18:00-19:30'}
+
+
+@pytest.mark.parametrize('overrides', [{'2026-9-23': '15:00-16:30'}, {'2026-09-23': '15:00'}, {'2026-09-23': '16:30-15:00'}, ['2026-09-23']])
+def test_invalid_date_override_is_rejected(overrides):
+    with pytest.raises(ValueError):
+        SchedulerConfig(date_overrides=overrides)
+
+
+def test_date_override_round_trips_through_config_file(tmp_path):
+    path = tmp_path / 'config.yaml'
+    path.write_text('scheduler:\n  weekly_enabled: true\n  weekly_plan:\n    "3": 18:00-19:30\n', encoding='utf-8')
+    save_target_and_scheduler_config(str(path), scheduler_updates={'date_overrides': {'2026-09-23': '15:00-16:30'}})
+    cfg = load_config(str(path))
+    assert cfg.scheduler.date_overrides == {'2026-09-23': '15:00-16:30'}
+    assert cfg.scheduler.weekly_plan == {'3': '18:00-19:30'}
+
+
+def test_override_api_saves_returns_drops_expired_and_rejects_invalid(tmp_path):
+    path = tmp_path / 'config.yaml'
+    path.write_text('{}')
+    handler = GymStatusHandler.__new__(GymStatusHandler)
+    responses = []
+    handler._send_json = lambda code, body: responses.append((code, body))
+    overrides = {'2026-09-23': '15:00-16:30', '2026-09-01': '16:30-18:00'}  # 后者已过期
+    with patch('xdty_booking.web.server._GLOBAL_CONFIG_PATH', str(path)), \
+         patch('xdty_booking.web.server.datetime', wraps=datetime) as clock:
+        clock.now.return_value = datetime(2026, 9, 21, 18)
+        handler._handle_scheduler_config_save({'scheduler': {'weekly_enabled': True, 'weekly_plan': {'3': '18:00-19:30'},
+                                                              'date_overrides': overrides}}, {})
+        assert responses[-1][0] == 200
+        handler._handle_scheduler_config_get()
+        assert responses[-1][1]['scheduler']['date_overrides'] == {'2026-09-23': '15:00-16:30'}
+        handler._handle_scheduler_config_save({'scheduler': {'date_overrides': {'2026-09-23': 'bad'}}}, {})
+        assert responses[-1][0] == 400
+        # 提交空表 = 清空特例
+        handler._handle_scheduler_config_save({'scheduler': {'date_overrides': {}}}, {})
+    cfg = load_config(str(path))
+    assert cfg.scheduler.date_overrides == {}
+    assert cfg.scheduler.weekly_plan == {'3': '18:00-19:30'}
+
+
+def test_dashboard_highlights_override_slot_over_weekly_plan():
+    cfg = AppConfig(scheduler=SchedulerConfig(weekly_enabled=True, weekly_plan={'3': '18:00-19:30'},
+                                              date_overrides={'2026-09-23': '15:00-16:30'}))
+    groups = [SimpleNamespace(date=day, week_name='', time_range=slot, slots=[])
+              for day, slot in [('2026-09-23', '15:00-16:30'), ('2026-09-23', '18:00-19:30'), ('2026-09-30', '18:00-19:30')]]
+    with patch('xdty_booking.web.server.load_config', return_value=cfg), patch('xdty_booking.web.server.XdtyApi') as api:
+        api.return_value.get_intervals.return_value = SimpleNamespace(status=1, info='ok', date_list=[], time_slot_list=groups)
+        result = query_gym_status(auto_heal=False)
+    assert [group['is_preferred'] for group in result['groups']] == [True, False, True]
+    assert result['scheduler_config']['date_overrides'] == {'2026-09-23': '15:00-16:30'}
+
+
+def test_dashboard_renders_override_rows_and_submits_them():
+    from xdty_booking.web.template import render_dashboard
+    html = render_dashboard({
+        'stadium_name': 'x', 'area_name': 'y', 'query_time': '', 'session_valid': True, 'info': '', 'groups': [],
+        'scheduler_config': {'weekly_enabled': True, 'weekly_plan': {'3': '18:00-19:30'},
+                             'date_overrides': {'2026-09-23': '15:00-16:30'}},
+    })
+    assert 'value="2026-09-23"' in html and 'value="15:00-16:30"' in html
+    assert 'date_overrides' in html  # 保存 payload 中携带
+    assert 'addOverrideRow' in html

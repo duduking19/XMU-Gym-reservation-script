@@ -37,6 +37,7 @@ def render_dashboard(data: dict) -> str:
     current_target_time = scheduler_config.get("target_time", "07:00:00")
     weekly_enabled = scheduler_config.get("weekly_enabled", False)
     weekly_plan = scheduler_config.get("weekly_plan", {})
+    date_overrides = scheduler_config.get("date_overrides", {}) or {}
     current_pref_time = target_config.get("preferred_time", "19:30-21:00")
     current_stadium_id = target_config.get("stadium_id", 16)
     current_venue_id = target_config.get("venue_id", 14)
@@ -82,6 +83,13 @@ def render_dashboard(data: dict) -> str:
         for day, name in enumerate(["周一", "周二", "周三", "周四", "周五", "周六", "周日"], 1)
     )
     weekly_options_html = "".join(f'<option value="{slot}"></option>' for slot, _ in preset_times)
+    override_rows_html = "".join(
+        f'<div class="override-row" style="display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 32px; gap: 8px; margin-bottom: 6px;">'
+        f'<input type="date" class="form-input override-date" aria-label="特例入场日期" value="{escape(str(day), quote=True)}">'
+        f'<input class="form-input override-slot" list="weeklyTimeOptions" aria-label="特例时段" placeholder="16:30-18:00" value="{escape(slot, quote=True)}">'
+        f'<button type="button" class="btn-action" title="删除" onclick="this.parentElement.remove()">✕</button></div>'
+        for day, slot in sorted(date_overrides.items())
+    )
     snipe_time_chips_html = "".join([
         f'<button type="button" class="time-chip {"active" if current_pref_time == t[0] else ""}" data-val="{t[0]}" onclick="setSnipeTime(\'{t[0]}\')">{t[1]}</button>'
         for t in preset_times
@@ -1136,6 +1144,10 @@ def render_dashboard(data: dict) -> str:
                         <div style="display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 8px;">{weekly_rows_html}</div>
                         <datalist id="weeklyTimeOptions">{weekly_options_html}</datalist>
                         <p style="font-size: 12px; color: #64748b;">时段格式：16:30-18:00。修改运行中的计划，请先停止，再保存并重新开启。电脑需保持唤醒，服务重启后需重新开启。</p>
+                        <div style="margin-top: 12px; font-weight: 600;">特例日期（优先于计划表）</div>
+                        <p style="font-size: 12px; color: #64748b; margin: 4px 0 8px;">指定某个<strong>入场日期</strong>改约其他时段，或给计划表没有的日子加一次预约。过期日期保存时自动清理。</p>
+                        <div id="overrideRows">{override_rows_html}</div>
+                        <button type="button" class="btn-action" onclick="addOverrideRow()" style="font-size: 12px;">＋ 添加特例</button>
                     </div>
                 </div>
 
@@ -1782,6 +1794,12 @@ def render_dashboard(data: dict) -> str:
                 const slot = document.getElementById(`weeklyDay${{day}}`).value.trim();
                 if (slot) weeklyPlan[String(day)] = slot;
             }}
+            const dateOverrides = {{}};
+            document.querySelectorAll("#overrideRows .override-row").forEach(row => {{
+                const d = row.querySelector(".override-date").value.trim();
+                const t = row.querySelector(".override-slot").value.trim();
+                if (d && t) dateOverrides[d] = t;
+            }});
 
             return {{
                 target: {{
@@ -1798,9 +1816,20 @@ def render_dashboard(data: dict) -> str:
                     target_time: targetTime,
                     fallback_nearest: weeklyEnabled ? false : fallbackNearest,
                     weekly_enabled: weeklyEnabled,
-                    weekly_plan: weeklyPlan
+                    weekly_plan: weeklyPlan,
+                    date_overrides: dateOverrides
                 }}
             }};
+        }}
+
+        function addOverrideRow() {{
+            const row = document.createElement("div");
+            row.className = "override-row";
+            row.style.cssText = "display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 32px; gap: 8px; margin-bottom: 6px;";
+            row.innerHTML = '<input type="date" class="form-input override-date" aria-label="特例入场日期">'
+                + '<input class="form-input override-slot" list="weeklyTimeOptions" aria-label="特例时段" placeholder="16:30-18:00">'
+                + '<button type="button" class="btn-action" title="删除" onclick="this.parentElement.remove()">✕</button>';
+            document.getElementById("overrideRows").appendChild(row);
         }}
 
         async function saveSchedulerConfigOnly() {{
