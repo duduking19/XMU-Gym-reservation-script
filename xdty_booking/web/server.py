@@ -11,6 +11,7 @@ from xdty_booking.config import (
     load_config,
     save_phpsessid,
     save_auth_params,
+    save_cas_credentials,
     save_target_and_scheduler_config
 )
 from xdty_booking.api.client import ApiClient
@@ -637,6 +638,8 @@ class GymStatusHandler(BaseHTTPRequestHandler):
             self._handle_book(params)
         elif parsed.path.startswith("/api/relogin"):
             self._handle_relogin()
+        elif parsed.path.startswith("/api/pw_login"):
+            self._handle_pw_login(body_json)
         elif parsed.path.startswith("/api/set_token"):
             self._handle_set_token(params)
         elif parsed.path.startswith("/api/scheduler/start"):
@@ -917,6 +920,28 @@ class GymStatusHandler(BaseHTTPRequestHandler):
                     "data": _qr_login_result
                 }
         self._send_json(200, data)
+
+    def _handle_pw_login(self, body: dict):
+        """统一身份认证账号密码登录；remember=true 时保存账号密码供失效后自动重新登录"""
+        username = str(body.get("username") or "").strip()
+        password = str(body.get("password") or "")
+        if not username or not password:
+            self._send_json(400, {"success": False, "error": "请填写账号和密码"})
+            return
+        try:
+            res = CasQrLoginClient().password_login(username, password)
+            c_path = _ensure_config_path(_GLOBAL_CONFIG_PATH)
+            if res.get("phpsessid"):
+                save_phpsessid(c_path, res["phpsessid"])
+            if res.get("auth_params"):
+                save_auth_params(c_path, res["auth_params"])
+            if body.get("remember"):
+                save_cas_credentials(c_path, username, password)
+            logger.info(f"💾 账号密码登录凭据已持久化回写至配置文件: {c_path}")
+            self._send_json(200, {"success": True, "logged_in": True, "data": res})
+        except Exception as e:
+            logger.error(f"账号密码登录失败: {e}")
+            self._send_json(200, {"success": False, "logged_in": False, "error": str(e)})
 
     def _handle_login_page(self):
         try:

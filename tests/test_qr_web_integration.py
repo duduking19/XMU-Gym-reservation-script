@@ -99,3 +99,69 @@ class TestQrWebIntegration(unittest.TestCase):
         self.assertEqual(body["data"]["phpsessid"], "32charslongphpsessid123456789012")
         mock_save_php.assert_called_once()
         mock_save_auth.assert_called_once()
+
+
+class TestPasswordLoginHandler(unittest.TestCase):
+    def _handler(self):
+        handler = GymStatusHandler.__new__(GymStatusHandler)
+        handler._send_json = MagicMock()
+        return handler
+
+    @patch("xdty_booking.web.server.save_cas_credentials")
+    @patch("xdty_booking.web.server.save_auth_params")
+    @patch("xdty_booking.web.server.save_phpsessid")
+    @patch("xdty_booking.web.server.CasQrLoginClient")
+    def test_pw_login_success_persists_and_remembers(self, mock_cls, save_sess, save_params, save_creds):
+        mock_cls.return_value.password_login.return_value = {
+            "success": True, "phpsessid": "sess_new", "auth_params": {"token": "t"}, "user_info": {}
+        }
+        handler = self._handler()
+        handler._handle_pw_login({"username": "20230001", "password": "pw", "remember": True})
+
+        mock_cls.return_value.password_login.assert_called_once_with("20230001", "pw")
+        save_sess.assert_called_once()
+        self.assertEqual(save_sess.call_args[0][1], "sess_new")
+        save_params.assert_called_once()
+        save_creds.assert_called_once()
+        self.assertEqual(save_creds.call_args[0][1:], ("20230001", "pw"))
+        code, body = handler._send_json.call_args[0]
+        self.assertEqual(code, 200)
+        self.assertTrue(body["success"])
+        self.assertTrue(body["logged_in"])
+        self.assertEqual(body["data"]["phpsessid"], "sess_new")
+
+    @patch("xdty_booking.web.server.save_cas_credentials")
+    @patch("xdty_booking.web.server.save_auth_params")
+    @patch("xdty_booking.web.server.save_phpsessid")
+    @patch("xdty_booking.web.server.CasQrLoginClient")
+    def test_pw_login_without_remember_does_not_store_password(self, mock_cls, save_sess, save_params, save_creds):
+        mock_cls.return_value.password_login.return_value = {
+            "success": True, "phpsessid": "sess_new", "auth_params": {"token": "t"}
+        }
+        handler = self._handler()
+        handler._handle_pw_login({"username": "20230001", "password": "pw", "remember": False})
+        save_creds.assert_not_called()
+
+    @patch("xdty_booking.web.server.CasQrLoginClient")
+    def test_pw_login_failure_returns_cas_message(self, mock_cls):
+        mock_cls.return_value.password_login.side_effect = RuntimeError("CAS 登录失败: 您提供的用户名或者密码有误")
+        handler = self._handler()
+        handler._handle_pw_login({"username": "20230001", "password": "bad"})
+        code, body = handler._send_json.call_args[0]
+        self.assertEqual(code, 200)
+        self.assertFalse(body["success"])
+        self.assertIn("用户名或者密码有误", body["error"])
+
+    def test_pw_login_rejects_empty_fields(self):
+        handler = self._handler()
+        handler._handle_pw_login({"username": "", "password": ""})
+        code, body = handler._send_json.call_args[0]
+        self.assertEqual(code, 400)
+        self.assertFalse(body["success"])
+
+    def test_login_page_contains_password_form(self):
+        from xdty_booking.web.template import render_qr_login_page
+        html = render_qr_login_page(is_already_logged_in=False, phpsessid_masked="")
+        self.assertIn("/api/pw_login", html)
+        self.assertIn('name="username"', html)
+        self.assertIn('type="password"', html)

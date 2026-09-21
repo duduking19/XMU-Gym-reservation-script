@@ -13,6 +13,8 @@ class AuthConfig:
     wechat_appid: str = "wx81a2b2fa90759cb7"
     wechat_appex_path: str = ""
     auth_params: Dict[str, Any] = field(default_factory=dict)
+    cas_username: str = ""  # 统一身份认证账号密码，用于 checkLogin 失效后的自动重新登录
+    cas_password: str = ""
 
 @dataclass
 class TargetConfig:
@@ -196,6 +198,20 @@ def save_phpsessid(config_path: str, new_token: str) -> bool:
 
     with open(config_path, "w", encoding="utf-8") as f:
         f.write(new_content)
+    return True
+
+def save_cas_credentials(config_path: str, username: str, password: str) -> bool:
+    """持久化统一身份认证账号密码至配置文件（明文，依赖文件权限保护）"""
+    if not os.path.exists(config_path):
+        return False
+    with open(config_path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    if not isinstance(data.get("auth"), dict):
+        data["auth"] = {}
+    data["auth"]["cas_username"] = username
+    data["auth"]["cas_password"] = password
+    with open(config_path, "w", encoding="utf-8") as f:
+        f.write(yaml.dump(data, allow_unicode=True, sort_keys=False))
     return True
 
 def save_auth_params(config_path: str, params: Dict[str, Any]) -> bool:

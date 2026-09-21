@@ -99,7 +99,7 @@ class BookingScheduler:
             self.status_callback("已手动停止定时任务")
 
     def ensure_valid_session(self, timeout: float = 30.0) -> bool:
-        """检查并确保登录态有效，若失效先尝试纯 HTTP 续登，失败后再触发微信小程序嗅探捕获"""
+        """检查并确保登录态有效，若失效依次尝试：纯 HTTP 续登 -> 账号密码重新登录 -> 微信小程序嗅探捕获"""
         is_missing = not bool(self.cfg.auth.phpsessid)
         is_alive = False if is_missing else self.session_mgr.check_alive()
         if is_alive:
@@ -120,12 +120,21 @@ class BookingScheduler:
                     logger.info(f"✅ checkLogin 纯 HTTP 续登成功！新 PHPSESSID: {token_str[:8]}***")
                     return True
 
-        # 2. 微信小程序嗅探兜底
+        # 2. 统一身份认证账号密码重新登录
+        if self.cfg.auth.cas_username and self.cfg.auth.cas_password:
+            new_token = self.session_mgr.refresh_session_via_password()
+            if new_token:
+                self.client.set_session_token(new_token)
+                self.cfg.auth.phpsessid = new_token
+                logger.info(f"✅ 账号密码重新登录成功！新 PHPSESSID: {str(new_token)[:8]}***")
+                return True
+
+        # 3. 微信小程序嗅探兜底
         if not self.cfg.auth.auto_harvest_enabled:
             logger.warning(f"检测到 {reason}，但 auto_harvest_enabled 未开启，跳过自动嗅探")
             return False
 
-        logger.info(f"启动第 2 阶自愈：微信小程序代理嗅探自愈闭环...")
+        logger.info(f"启动第 3 阶自愈：微信小程序代理嗅探自愈闭环...")
         new_token = self.harvest_service.harvest(timeout=timeout)
         if new_token:
             self.session_mgr.update_token(new_token)

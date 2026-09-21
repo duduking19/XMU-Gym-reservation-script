@@ -3,6 +3,7 @@ import threading
 import logging
 from typing import Optional, Callable, Dict, Any
 from xdty_booking.api.endpoints import XdtyApi
+from cas_qr_login.cas_client import CasQrLoginClient
 
 logger = logging.getLogger(__name__)
 
@@ -77,13 +78,49 @@ class SessionManager:
             logger.warning(f"checkLogin 续登失败: {info}")
             return None
 
+    def refresh_session_via_password(self) -> Optional[str]:
+        """
+        方案 B：使用配置中保存的统一身份认证账号密码重新登录 CAS，换取全新 PHPSESSID 与 auth_params。
+        未配置账号密码时直接返回 None。
+        """
+        from xdty_booking.config import load_config, save_phpsessid, save_auth_params
+        try:
+            auth = load_config(self.config_path).auth
+        except Exception as e:
+            logger.warning(f"读取配置以获取 CAS 账号密码失败: {e}")
+            return None
+        if not (auth.cas_username and auth.cas_password):
+            return None
+
+        logger.info("🔑 正在使用统一身份认证账号密码重新登录...")
+        try:
+            res = CasQrLoginClient().password_login(auth.cas_username, auth.cas_password)
+        except Exception as e:
+            logger.warning(f"账号密码重新登录失败: {e}")
+            return None
+
+        new_phpsessid = res.get("phpsessid")
+        if not new_phpsessid:
+            return None
+        self.update_token(new_phpsessid)
+        self.set_auth_params(res.get("auth_params") or {})
+        try:
+            save_phpsessid(self.config_path, new_phpsessid)
+            if self.auth_params:
+                save_auth_params(self.config_path, self.auth_params)
+        except Exception as e:
+            logger.warning(f"持久化账号密码登录凭据异常: {e}")
+        logger.info(f"🎉 账号密码重新登录成功！新 Session: {new_phpsessid[:8]}***")
+        return new_phpsessid
+
     def renew_or_fallback(self) -> Optional[str]:
         """
-        双阶自愈策略：
+        三阶自愈策略：
         第 1 阶：优先调用 checkLogin 进行纯 HTTP 自动续登；
-        第 2 阶：若失败或凭据过期，回退调用 on_expired 回调（微信小程序冷启动兜底截取）。
+        第 2 阶：使用配置中的统一身份认证账号密码重新登录；
+        第 3 阶：仍失败则回退调用 on_expired 回调（微信小程序冷启动兜底截取）。
         """
-        new_token = self.refresh_session_via_check_login()
+        new_token = self.refresh_session_via_check_login() or self.refresh_session_via_password()
         if new_token:
             return new_token
         if self.on_expired:

@@ -106,3 +106,16 @@ def test_ensure_config_path_auto_creates(tmp_path, monkeypatch):
     assert os.path.exists(target)
     assert res == target
 
+
+
+def test_save_cas_credentials_roundtrip(tmp_path):
+    from xdty_booking.config import save_cas_credentials
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text('auth:\n  phpsessid: "abc"\n', encoding="utf-8")
+
+    assert save_cas_credentials(str(config_file), "20230001", "P@ss:word#1")
+
+    cfg = load_config(str(config_file))
+    assert cfg.auth.cas_username == "20230001"
+    assert cfg.auth.cas_password == "P@ss:word#1"
+    assert cfg.auth.phpsessid == "abc"

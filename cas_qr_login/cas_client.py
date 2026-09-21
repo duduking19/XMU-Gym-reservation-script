@@ -6,8 +6,27 @@ import time
 from typing import Dict, Any, Optional, Tuple
 from urllib.parse import urlparse, parse_qs, quote
 import requests
+from cryptography.hazmat.primitives import padding
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 logger = logging.getLogger(__name__)
+
+_AES_CHARS = "ABCDEFGHJKMNPQRSTWXYZabcdefhijkmnprstwxyz2345678"
+
+
+def encrypt_password(password: str, salt: str) -> str:
+    """
+    复刻 CAS 页面 encrypt.js 的 encryptPassword：
+    AES-CBC(key=pwdEncryptSalt, iv=随机 16 字符) 加密 "随机 64 字符 + 密码"，PKCS7 填充后 Base64。
+    IV 不随表单提交，服务端任意 IV 解密后丢弃前 64 字节即可还原密码。
+    """
+    if not salt:
+        return password
+    rand = lambda n: "".join(random.choice(_AES_CHARS) for _ in range(n))
+    padder = padding.PKCS7(128).padder()
+    data = padder.update((rand(64) + password).encode("utf-8")) + padder.finalize()
+    enc = Cipher(algorithms.AES(salt.encode("utf-8")), modes.CBC(rand(16).encode("utf-8"))).encryptor()
+    return base64.b64encode(enc.update(data) + enc.finalize()).decode("ascii")
 
 class CasQrLoginClient:
     """
@@ -172,9 +191,83 @@ class CasQrLoginClient:
 
         resp = self.session.post(post_url, data=payload, headers=headers, allow_redirects=False, timeout=10)
         logger.info(f"CAS 表单提交响应状态: {resp.status_code}")
+        return self._finish_login(resp.headers.get("Location"))
 
+    def password_login(self, username: str, password: str, solver=None, max_captcha_retry: int = 3) -> Dict[str, Any]:
+        """
+        统一身份认证账号密码登录（cllt=userNameLogin）：
+        加载登录页取 execution/pwdEncryptSalt -> 按需识别图形验证码 -> AES 加密密码提交 -> 复用重定向换票流程。
+        验证码错误会重试；用户名/密码错误直接抛出，避免触发 CAS 账号锁定。
+        """
+        if solver is None:
+            from xdty_booking.solver.captcha_solver import CaptchaSolver
+            solver = CaptchaSolver(save_dir="captchas")
+
+        encoded_service = quote(self.DEFAULT_SERVICE, safe="")
+        login_url = f"{self.CAS_BASE}/login?skip=skip&service={encoded_service}"  # skip 避免微信 UA 被转到微信 OAuth
+        self.login_page_url = login_url
+        page = self.session.get(login_url, timeout=10).text
+        m_exec = re.search(r'name=["\']execution["\']\s+value=["\']([^"\']+)["\']', page)
+        m_salt = re.search(r'id=["\']pwdEncryptSalt["\']\s+value=["\']([^"\']+)["\']', page)
+        execution = m_exec.group(1) if m_exec else "e1s1"
+        salt = m_salt.group(1) if m_salt else ""
+
+        need_captcha = False
+        try:
+            r = self.session.get(
+                f"{self.CAS_BASE}/checkNeedCaptcha.htl?username={quote(username)}&_={int(time.time() * 1000)}",
+                headers={"Referer": login_url}, timeout=8
+            )
+            need_captcha = bool(r.json().get("isNeed"))
+        except Exception as e:
+            logger.warning(f"checkNeedCaptcha 异常，按不需要验证码处理: {e}")
+
+        for attempt in range(1, max_captcha_retry + 1):
+            captcha = ""
+            if need_captcha:
+                img = self.session.get(
+                    f"{self.CAS_BASE}/getCaptcha.htl?{int(time.time() * 1000)}",
+                    headers={"Referer": login_url}, timeout=8
+                ).content
+                captcha = solver.solve(img)
+                logger.info(f"CAS 图形验证码识别结果: {captcha} (第 {attempt} 次)")
+
+            payload = {
+                "username": username,
+                "password": encrypt_password(password, salt),
+                "captcha": captcha,
+                "_eventId": "submit",
+                "cllt": "userNameLogin",
+                "dllt": "generalLogin",
+                "lt": "",
+                "execution": execution,
+            }
+            resp = self.session.post(
+                login_url, data=payload,
+                headers={"Origin": "https://ids.xmu.edu.cn", "Referer": login_url,
+                         "Content-Type": "application/x-www-form-urlencoded"},
+                allow_redirects=False, timeout=10
+            )
+            logger.info(f"CAS 账号密码表单提交响应状态: {resp.status_code}")
+            if resp.status_code in (301, 302, 303, 307) and resp.headers.get("Location"):
+                return self._finish_login(resp.headers["Location"])
+
+            m_err = re.search(r'id=["\']showErrorTip["\'][^>]*>\s*(?:<span[^>]*>)?([^<]+)', resp.text)
+            err = m_err.group(1).strip() if m_err else f"CAS 未返回重定向 (HTTP {resp.status_code})"
+            m_exec = re.search(r'name=["\']execution["\']\s+value=["\']([^"\']+)["\']', resp.text)
+            if m_exec:
+                execution = m_exec.group(1)
+            if "验证码" in err and attempt < max_captcha_retry:
+                logger.warning(f"CAS 提示验证码错误，重试: {err}")
+                need_captcha = True
+                continue
+            raise RuntimeError(f"CAS 登录失败: {err}")
+        raise RuntimeError("CAS 登录失败: 验证码重试次数用尽")
+
+    def _finish_login(self, first_location: Optional[str]) -> Dict[str, Any]:
+        """跟随重定向链换发 ST -> 体育馆验票 -> 捕获 auth_params -> checkLogin 获取 PHPSESSID -> 探活"""
         # 2. 跟随重定向链，直到捕获 xdLogin.html 中的 auth_params
-        curr_url = resp.headers.get("Location")
+        curr_url = first_location
         captured_auth_params = {}
         max_hops = 12
 
@@ -219,7 +312,7 @@ class CasQrLoginClient:
             "phpsessid": self.phpsessid,
             "auth_params": self.auth_params,
             "user_info": self.user_info,
-            "message": "企业微信扫码登录成功！凭据已全部就绪。"
+            "message": "登录成功！凭据已全部就绪。"
         }
 
     def _do_check_login(self, auth_params: Dict[str, str]) -> Optional[str]:

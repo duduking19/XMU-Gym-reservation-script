@@ -2709,6 +2709,22 @@ def render_qr_login_page(is_already_logged_in: bool = False, phpsessid_masked: s
                 🔄 刷新二维码
             </button>
 
+            <!-- 账号密码登录区 -->
+            <form id="pwForm" onsubmit="return pwLogin(event)" style="margin: 22px auto 0; max-width: 320px; text-align: left;">
+                <div style="text-align: center; font-size: 12px; color: #94a3b8; margin-bottom: 10px;">—— 或使用统一身份认证账号密码登录 ——</div>
+                <input name="username" id="pwUser" placeholder="学号 / 工号" autocomplete="username" required
+                       style="width: 100%; box-sizing: border-box; padding: 9px 12px; margin-bottom: 8px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 14px;">
+                <input name="password" id="pwPass" type="password" placeholder="密码" autocomplete="current-password" required
+                       style="width: 100%; box-sizing: border-box; padding: 9px 12px; margin-bottom: 8px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 14px;">
+                <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #475569; margin-bottom: 10px;">
+                    <input type="checkbox" id="pwRemember" checked> 保存账号密码，登录失效时自动重新登录
+                </label>
+                <button type="submit" class="refresh-btn" id="pwBtn" style="width: 100%; margin-top: 0; background: var(--primary); color: #fff; border-color: var(--primary);">
+                    🔑 账号密码登录
+                </button>
+                <div id="pwMsg" style="font-size: 12px; color: #b91c1c; margin-top: 8px; min-height: 16px; text-align: center;"></div>
+            </form>
+
             <!-- 成功跳转区 -->
             <div class="success-card" id="successCard">
                 <div style="font-size: 18px; font-weight: 700; color: #166534; margin-bottom: 6px;">
@@ -2827,6 +2843,41 @@ def render_qr_login_page(is_already_logged_in: bool = False, phpsessid_masked: s
 
         function refreshQr() {{
             initQr();
+        }}
+
+        async function pwLogin(ev) {{
+            ev.preventDefault();
+            const btn = document.getElementById("pwBtn");
+            const msg = document.getElementById("pwMsg");
+            btn.disabled = true;
+            msg.style.color = "#475569";
+            msg.innerText = "正在登录统一身份认证，识别验证码中...";
+            try {{
+                const res = await fetch("/api/pw_login", {{
+                    method: "POST",
+                    headers: {{"Content-Type": "application/json"}},
+                    body: JSON.stringify({{
+                        username: document.getElementById("pwUser").value.trim(),
+                        password: document.getElementById("pwPass").value,
+                        remember: document.getElementById("pwRemember").checked
+                    }})
+                }});
+                const data = await res.json();
+                if (data.success) {{
+                    msg.innerText = "";
+                    document.getElementById("pwForm").style.display = "none";
+                    handleSuccess(data.data);
+                }} else {{
+                    msg.style.color = "#b91c1c";
+                    msg.innerText = data.error || "登录失败";
+                }}
+            }} catch (e) {{
+                msg.style.color = "#b91c1c";
+                msg.innerText = "请求异常: " + e.message;
+            }} finally {{
+                btn.disabled = false;
+            }}
+            return false;
         }}
 
         window.onload = initQr;

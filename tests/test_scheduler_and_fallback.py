@@ -141,3 +141,22 @@ def test_scheduler_silent_run_flow():
         mock_wait.assert_called_once()
         mock_engine.execute_booking.assert_called_once()
         session_mgr.start_heartbeat_daemon.assert_not_called()
+
+
+def test_scheduler_ensure_session_uses_password_relogin_before_harvest():
+    cfg = AppConfig()
+    cfg.auth.auto_harvest_enabled = True
+    cfg.auth.cas_username = "20230001"
+    cfg.auth.cas_password = "pw"
+    session_mgr = Mock()
+    session_mgr.check_alive.return_value = False
+    session_mgr.refresh_session_via_password.return_value = "pw_sess"
+    client = Mock()
+
+    scheduler = BookingScheduler(config=cfg, session_mgr=session_mgr, client=client,
+                                 api=Mock(), solver=Mock(), config_path="config/config.example.yaml")
+    with patch.object(scheduler.harvest_service, "harvest") as mock_harvest:
+        assert scheduler.ensure_valid_session() is True
+        mock_harvest.assert_not_called()
+    client.set_session_token.assert_called_once_with("pw_sess")
+    assert cfg.auth.phpsessid == "pw_sess"
