@@ -129,10 +129,21 @@ class BookingScheduler:
 
     def ensure_valid_session(self, timeout: float = 30.0) -> bool:
         """
-        检查并确保登录态有效：先以配置文件凭据为准，再同时探测“我的预约”与场次查询接口；
-        若失效依次尝试：纯 HTTP 续登 -> 账号密码重新登录 -> 微信小程序嗅探捕获
+        预检自愈：配置了账号密码时，无条件先用账号密码重新登录（不信任隔夜会话）；
+        未配置或登录失败时回退：以配置文件凭据为准，探测“我的预约”与场次查询接口，
+        失效再依次尝试纯 HTTP 续登 -> 微信小程序嗅探捕获
         """
         self._adopt_file_credentials()
+
+        # 0. 每日强制账号密码重新登录
+        new_token = self.session_mgr.refresh_session_via_password()
+        if new_token:
+            self.client.set_session_token(new_token)
+            self.cfg.auth.phpsessid = new_token
+            logger.info(f"✅ 已按计划使用账号密码重新登录！新 PHPSESSID: {str(new_token)[:8]}***")
+            return True
+        logger.warning("账号密码重新登录未执行或未成功（未配置 / CAS 异常），回退检查现有会话...")
+
         is_missing = not bool(self.cfg.auth.phpsessid)
         is_alive = (not is_missing) and self.session_mgr.check_alive() and self._slots_reachable()
         if is_alive:
@@ -153,20 +164,12 @@ class BookingScheduler:
                     logger.info(f"✅ checkLogin 纯 HTTP 续登成功！新 PHPSESSID: {token_str[:8]}***")
                     return True
 
-        # 2. 统一身份认证账号密码重新登录（账号密码由 SessionManager 从配置文件实时读取）
-        new_token = self.session_mgr.refresh_session_via_password()
-        if new_token:
-            self.client.set_session_token(new_token)
-            self.cfg.auth.phpsessid = new_token
-            logger.info(f"✅ 账号密码重新登录成功！新 PHPSESSID: {str(new_token)[:8]}***")
-            return True
-
-        # 3. 微信小程序嗅探兜底
+        # 2. 微信小程序嗅探兜底
         if not self.cfg.auth.auto_harvest_enabled:
             logger.warning(f"检测到 {reason}，但 auto_harvest_enabled 未开启，跳过自动嗅探")
             return False
 
-        logger.info(f"启动第 3 阶自愈：微信小程序代理嗅探自愈闭环...")
+        logger.info(f"启动微信小程序代理嗅探自愈闭环...")
         new_token = self.harvest_service.harvest(timeout=timeout)
         if new_token:
             self.session_mgr.update_token(new_token)

@@ -173,6 +173,7 @@ def test_scheduler_ensure_session_adopts_credentials_saved_after_start(tmp_path)
     cfg = AppConfig()  # 启动时内存里没有任何凭据
     session_mgr = Mock()
     session_mgr.check_alive.return_value = True
+    session_mgr.refresh_session_via_password.return_value = None  # 未配置账号密码
     client = Mock()
     api = Mock()
     api.get_intervals.return_value.status = 1
@@ -220,3 +221,41 @@ def test_scheduler_ensure_session_requires_slot_query_not_only_my_subscribe():
     assert scheduler.ensure_valid_session() is False
     api.get_intervals.assert_called_once_with(14, 16, 8, "[67]")
     session_mgr.refresh_session_via_password.assert_called_once()
+
+
+def test_scheduler_pre_check_forces_password_relogin_before_any_probe():
+    """每日预检：只要配置了账号密码，就直接重新登录，不依赖隔夜会话的探测结果"""
+    cfg = AppConfig()
+    cfg.auth.phpsessid = "overnight_sess"
+    session_mgr = Mock()
+    session_mgr.refresh_session_via_password.return_value = "daily_sess"
+    client = Mock()
+    api = Mock()
+
+    scheduler = BookingScheduler(config=cfg, session_mgr=session_mgr, client=client,
+                                 api=api, solver=Mock(), config_path="config/config.example.yaml")
+    assert scheduler.ensure_valid_session() is True
+
+    session_mgr.refresh_session_via_password.assert_called_once()
+    session_mgr.check_alive.assert_not_called()
+    api.get_intervals.assert_not_called()
+    session_mgr.refresh_session_via_check_login.assert_not_called()
+    client.set_session_token.assert_called_once_with("daily_sess")
+    assert cfg.auth.phpsessid == "daily_sess"
+
+
+def test_scheduler_pre_check_falls_back_to_existing_session_when_relogin_fails():
+    """账号密码登录失败（CAS 异常等）时，回退检查现有会话，不让当天抢票直接失败"""
+    cfg = AppConfig()
+    cfg.auth.phpsessid = "overnight_sess"
+    cfg.auth.auto_harvest_enabled = False
+    session_mgr = Mock()
+    session_mgr.refresh_session_via_password.return_value = None
+    session_mgr.check_alive.return_value = True
+    api = Mock()
+    api.get_intervals.return_value.status = 1
+
+    scheduler = BookingScheduler(config=cfg, session_mgr=session_mgr, client=Mock(),
+                                 api=api, solver=Mock(), config_path="config/config.example.yaml")
+    assert scheduler.ensure_valid_session() is True
+    session_mgr.refresh_session_via_check_login.assert_not_called()
