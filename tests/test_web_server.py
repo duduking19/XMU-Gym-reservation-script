@@ -169,3 +169,28 @@ class TestWebServer(unittest.TestCase):
         self.assertIn('e.key === "Escape"', html)
         self.assertIn('e.key === "Enter"', html)
 
+
+
+def test_start_login_monitor_runs_daemon_with_notifier(tmp_path):
+    from unittest.mock import patch
+    from xdty_booking.web.server import start_login_monitor
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(
+        'auth:\n  phpsessid: "sess"\n  heartbeat_interval_seconds: 300\n'
+        'notify:\n  enabled: true\n  channel: feishu\n  feishu:\n    webhook_url: "https://example/hook"\n',
+        encoding="utf-8",
+    )
+    with patch("xdty_booking.web.server.SessionManager.check_alive", return_value=True):
+        mgr = start_login_monitor(str(cfg_file))
+        try:
+            assert mgr is not None and mgr._running is True
+            assert mgr._thread is not None and mgr._thread.daemon is True
+        finally:
+            mgr.stop()
+
+
+def test_start_login_monitor_disabled_when_interval_is_zero(tmp_path):
+    from xdty_booking.web.server import start_login_monitor
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text('auth:\n  phpsessid: "sess"\n  heartbeat_interval_seconds: 0\n', encoding="utf-8")
+    assert start_login_monitor(str(cfg_file)) is None

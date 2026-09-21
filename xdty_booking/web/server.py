@@ -1125,6 +1125,31 @@ class GymStatusHandler(BaseHTTPRequestHandler):
                 }
                 self._send_html(200, render_dashboard(fallback_data))
 
+def start_login_monitor(config_path: str) -> Optional[SessionManager]:
+    """
+    后台登录状态监控：按 auth.heartbeat_interval_seconds 周期探活，失效时自动自愈并通知。
+    周期 <= 0 时关闭。凭据每轮从配置文件重新读取，因此网页登录 / 调度器重登后无需重启。
+    """
+    try:
+        c_path = _ensure_config_path(config_path)
+        cfg = load_config(c_path)
+    except Exception as e:
+        logger.warning(f"登录状态监控未启动（读取配置失败）: {e}")
+        return None
+    interval = int(cfg.auth.heartbeat_interval_seconds or 0)
+    if interval <= 0:
+        logger.info("登录状态监控已关闭 (auth.heartbeat_interval_seconds <= 0)")
+        return None
+    client = ApiClient(base_url=cfg.base_url)
+    if cfg.auth.phpsessid:
+        client.set_session_token(cfg.auth.phpsessid)
+    api = XdtyApi(client, uid=cfg.auth.uid or None)
+    mgr = SessionManager(api, phpsessid=cfg.auth.phpsessid, auth_params=cfg.auth.auth_params, config_path=c_path)
+    mgr.start_heartbeat_daemon(interval_seconds=interval, notifier=Notifier(cfg.notify))
+    logger.info(f"🩺 登录状态监控已启动，每 {interval} 秒探活一次，失效将自动重登并通知")
+    return mgr
+
+
 def run_server(port: int = 8080, config_path: str = "config/config.yaml", host: str = "0.0.0.0"):
     global _GLOBAL_CONFIG_PATH
     _GLOBAL_CONFIG_PATH = config_path
@@ -1142,6 +1167,7 @@ def run_server(port: int = 8080, config_path: str = "config/config.yaml", host: 
     logger.info(f"👉 实时 JSON API: http://localhost:{port}/api/status")
     logger.info(f"👉 凭证自愈 API: http://localhost:{port}/api/harvest")
     print(f"\n服务启动成功！浏览器访问: http://localhost:{port} (扫码登录: http://localhost:{port}/login)\n")
+    start_login_monitor(config_path)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

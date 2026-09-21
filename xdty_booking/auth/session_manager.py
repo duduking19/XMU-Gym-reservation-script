@@ -153,28 +153,67 @@ class SessionManager:
             logger.error(f"Session 存活检测异常: {e}")
             return False
 
-    def heartbeat_loop(self, interval_seconds: int = 300):
+    def adopt_config_credentials(self):
+        """网页登录 / 调度器重登会把新凭据写入配置文件，探活前先以文件为准"""
+        if not self.config_path:
+            return
+        from xdty_booking.config import load_config
+        try:
+            auth = load_config(self.config_path).auth
+        except Exception as e:
+            logger.debug(f"读取配置文件凭据失败，沿用内存凭据: {e}")
+            return
+        if auth.phpsessid and auth.phpsessid != self.phpsessid:
+            self.update_token(auth.phpsessid)
+        if auth.auth_params:
+            self.auth_params = auth.auth_params
+
+    def heartbeat_loop(self, interval_seconds: int = 300, notifier=None):
         """
-        阻塞式心跳循环，适于独立作为保活守护进程启动
+        阻塞式心跳循环，适于独立作为保活守护进程启动。
+        传入 notifier 时作为登录状态监控：失效 -> 自动自愈 -> 通知（持续失效只通知一次，恢复后补一条）。
         """
+        interval_seconds = max(1, int(interval_seconds or 0))  # 0 由调用方视为关闭；此处防止空转
         logger.info(f"Session 心跳保活守护已启动，保活周期: {interval_seconds} 秒")
         self._running = True
+        notified_expired = False
         while self._running:
+            self.adopt_config_credentials()
             alive = self.check_alive()
             current_time = time.strftime("%Y-%m-%d %H:%M:%S")
             if alive:
                 logger.info(f"[{current_time}] 心跳发送成功，Session 维持活跃状态 ✅")
+                if notified_expired:
+                    self._notify(notifier, "登录已恢复", f"检测时间：{current_time}\n当前会话：{self.phpsessid[:8]}***")
+                    notified_expired = False
             else:
                 logger.error(f"[{current_time}] ⚠️ Session 已失效或未能成功保活！尝试自动自愈...")
-                self.renew_or_fallback()
-            
+                healed = self.renew_or_fallback()
+                if not notified_expired:
+                    if healed:
+                        self._notify(notifier, "登录失效，已自动重新登录",
+                                     f"检测时间：{current_time}\n新会话：{str(healed)[:8]}***")
+                    else:
+                        self._notify(notifier, "登录失效，自动重新登录失败",
+                                     f"检测时间：{current_time}\ncheckLogin 续登与账号密码登录均未成功，请尽快打开控制台登录页手动登录。")
+                notified_expired = not healed
+
             # 分段休眠，以便快速响应 stop 信号
             for _ in range(interval_seconds):
                 if not self._running:
                     break
                 time.sleep(1)
 
-    def start_heartbeat_daemon(self, interval_seconds: int = 300):
+    @staticmethod
+    def _notify(notifier, title: str, content: str):
+        if notifier is None:
+            return
+        try:
+            notifier.send(title=title, content=content)
+        except Exception as e:
+            logger.error("登录状态通知发送异常 [%s]: %s", title, type(e).__name__)
+
+    def start_heartbeat_daemon(self, interval_seconds: int = 300, notifier=None):
         """
         启动后台守护线程运行心跳
         """
@@ -183,7 +222,7 @@ class SessionManager:
         self._running = True
         self._thread = threading.Thread(
             target=self.heartbeat_loop,
-            args=(interval_seconds,),
+            args=(interval_seconds, notifier),
             daemon=True
         )
         self._thread.start()
