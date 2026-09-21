@@ -57,6 +57,27 @@ def set_windows_keep_awake(enable: bool = True):
         logger.debug(f"防休眠设置异常: {e}")
 
 
+# 失败原因关键字 -> 通知标题分类（按顺序匹配，第一条命中为准）
+_FAILURE_KINDS = (
+    (("登录", "失效", "PHPSESSID", "token", "未授权"), "登录失效"),
+    (("满", "超额", "名额"), "名额已满"),
+    (("验证码",), "验证码错误"),
+    (("网络", "超时", "timeout"), "网络异常"),
+    (("未找到",), "未找到场次"),
+)
+
+
+def classify_failure(res: Dict[str, Any]) -> str:
+    """把 execute_booking 的失败结果归类为便于一眼识别的标题"""
+    if res.get("full") or res.get("capacity_full"):
+        return "名额已满"
+    info = str(res.get("info", ""))
+    for keywords, kind in _FAILURE_KINDS:
+        if any(k in info for k in keywords):
+            return kind
+    return "预约失败"
+
+
 class BookingScheduler:
     """
     早 7 点准点抢票调度服务：
@@ -89,6 +110,29 @@ class BookingScheduler:
         self.status_callback: Optional[Callable[[str], None]] = None
         self.next_booking = None
         self.last_result = None
+
+    def _notify(self, title: str, content: str) -> Dict[str, bool]:
+        """发送通知；任何异常只记日志，绝不中断预约流程"""
+        try:
+            result = self.notifier.send(title=title, content=content)
+            if not any(result.values()):
+                logger.warning(f"通知未送达 [{title}]，请检查通知配置或网络")
+            return result
+        except Exception as e:
+            logger.error("通知发送异常 [%s]: %s", title, type(e).__name__)
+            return {"error": False}
+
+    def _plan_context(self, visit_date: str, preferred_time: str) -> str:
+        return (f"场馆：{self.cfg.target.stadium_name}\n"
+                f"入场日期：{visit_date}\n计划时段：{preferred_time}\n")
+
+    def _missed_window(self, visit_date: str, preferred_time: str) -> Dict[str, Any]:
+        info = "已错过本次开抢时间，继续等待下一个计划日"
+        self._notify(title=f"错过开抢时间 {visit_date} {preferred_time}",
+                     content=self._plan_context(visit_date, preferred_time)
+                     + f"当前时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                     "原因：到达开抢时刻时服务未在运行或被阻塞，本次未提交预约。")
+        return {"success": False, "info": info}
 
     def stop(self):
         """手动取消/停止定时调度守护"""
@@ -193,6 +237,10 @@ class BookingScheduler:
                     raise
                 logger.exception("本次每周计划预约异常，将继续下一个计划日")
                 self.last_result = {"success": False, "info": str(e)}
+                _, visit_date, slot = self.next_booking
+                self._notify(title=f"预约流程异常 {visit_date} {slot}",
+                             content=self._plan_context(visit_date, slot)
+                             + f"异常：{type(e).__name__}: {e}\n系统将继续执行下一个计划日，请检查服务器日志。")
             if not self.cfg.scheduler.weekly_enabled:
                 return self.last_result
             # 提前毫秒提交或失败重试结束时，不能再次选中同一开抢时刻。
@@ -251,7 +299,7 @@ class BookingScheduler:
                 return {"success": False, "info": "定时任务已被手动终止"}
 
             if self.cfg.scheduler.weekly_enabled and datetime.now() > target_dt + timedelta(minutes=1):
-                return {"success": False, "info": "已错过本次开抢时间，继续等待下一个计划日"}
+                return self._missed_window(visit_date, preferred_time)
 
             # 2. 到达预检时刻：仅在此刻全面执行 Session 存活探测与失效自愈 (此时捕获的凭证最新鲜有效)
             logger.info(f"🔍 到达抢票前预检时刻 ({datetime.now().strftime('%H:%M:%S')})，检查凭证有效性...")
@@ -260,6 +308,10 @@ class BookingScheduler:
             valid = self.ensure_valid_session()
             if not valid:
                 logger.error("⚠️ 提前预检自愈未成功，抢票将按当前状态继续尝试")
+                self._notify(title=f"预检登录失败 {visit_date} {preferred_time}",
+                             content=self._plan_context(visit_date, preferred_time)
+                             + f"账号密码重新登录与会话续登均失败，{target_dt.strftime('%H:%M')} 抢票大概率失败。\n"
+                             "请立即打开控制台登录页手动登录，服务会在开抢时自动采用新凭据。")
 
             # 3. 冲刺等待期：在准点前 30 秒进行高精度服务端毫秒时间差校准
             while (target_ts - datetime.now().timestamp()) > 35.0:
@@ -284,7 +336,7 @@ class BookingScheduler:
             if self._stop_event.is_set():
                 return {"success": False, "info": "定时任务已被手动终止"}
             if self.cfg.scheduler.weekly_enabled and datetime.now() > target_dt + timedelta(minutes=1):
-                return {"success": False, "info": "已错过本次开抢时间，继续等待下一个计划日"}
+                return self._missed_window(visit_date, preferred_time)
 
             # 5. 准点瞬间：极速并发抢票！
             logger.info(f"⚡ [准点] {datetime.now().strftime('%H:%M:%S')} 到达放号时刻！立即执行极速抢票！")
@@ -329,6 +381,12 @@ class BookingScheduler:
                 logger.error(f"准点抢票结果: {res.get('info')}")
                 if self.status_callback:
                     self.status_callback(f"⚠️ 准点抢票结束: {res.get('info')}")
+                kind = classify_failure(res)
+                res["notification"] = self._notify(
+                    title=f"{kind} {visit_date} {preferred_time}",
+                    content=self._plan_context(visit_date, preferred_time)
+                    + f"原因：{res.get('info')}\n"
+                    + ("系统将继续执行下一个计划日。" if self.cfg.scheduler.weekly_enabled else "本次定时任务已结束。"))
 
             return res
         finally:

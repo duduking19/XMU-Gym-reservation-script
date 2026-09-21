@@ -219,6 +219,11 @@ class BookingEngine:
             err = f"查询场次列表网络异常: {e}"
             logger.error(err)
             return {"success": False, "info": err}
+        if getattr(intervals, "status", 1) != 1:
+            # 登录失效等情况服务端返回 status=0 且列表为空，不能误报为「未找到场次」
+            err = f"查询场次失败: {getattr(intervals, 'info', '') or '服务端返回异常'}"
+            logger.error(err)
+            return {"success": False, "info": err}
 
         # 2. 如果直接指定了 interval_id，优先以该 ID 预约
         if interval_id:
