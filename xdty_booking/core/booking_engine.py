@@ -218,12 +218,12 @@ class BookingEngine:
         except Exception as e:
             err = f"查询场次列表网络异常: {e}"
             logger.error(err)
-            return {"success": False, "info": err}
+            return {"success": False, "info": err, "reason": "query_failed"}
         if getattr(intervals, "status", 1) != 1:
             # 登录失效等情况服务端返回 status=0 且列表为空，不能误报为「未找到场次」
             err = f"查询场次失败: {getattr(intervals, 'info', '') or '服务端返回异常'}"
             logger.error(err)
-            return {"success": False, "info": err}
+            return {"success": False, "info": err, "reason": "query_failed"}
 
         # 2. 如果直接指定了 interval_id，优先以该 ID 预约
         if interval_id:
@@ -292,7 +292,7 @@ class BookingEngine:
             if not slot:
                 err = f"未找到指定时段场次: 日期 {target_date_str}, 时段 {target_time_str}"
                 logger.error(err)
-                return {"success": False, "info": err}
+                return {"success": False, "info": err, "reason": "slot_missing"}
             msg = f"该时段目前无空闲名额 (已约满 {slot.selected}/{slot.max_count})"
             logger.warning(msg)
             return {"success": False, "info": msg, "slot": slot, "full": True}
@@ -311,7 +311,7 @@ class BookingEngine:
         if not candidates:
             err = f"未找到指定时段场次: 日期 {target_date_str}, 时段 {target_time_str}"
             logger.error(err)
-            return {"success": False, "info": err, "full": True}
+            return {"success": False, "info": err, "full": True, "reason": "slot_missing"}
 
         for c_group, c_slot in candidates:
             if slot and c_slot.interval_id == slot.interval_id:

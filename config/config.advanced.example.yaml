@@ -65,6 +65,8 @@ scheduler:
   fallback_nearest: true
   # 准点前提前多少分钟自检 Session 有效性（若过期自动自愈）
   pre_check_minutes: 5
+  # 准点后放票并非瞬时完成：目标时段缺失或仍为锁定状态时，最多持续轮询多少秒（每 2 秒一次）
+  release_grace_seconds: 600
 
 # 抢票成功即时通知提醒配置
 notify:

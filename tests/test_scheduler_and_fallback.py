@@ -238,9 +238,10 @@ def test_scheduler_pre_check_forces_password_relogin_before_any_probe():
 
     session_mgr.refresh_session_via_password.assert_called_once()
     session_mgr.check_alive.assert_not_called()
-    api.get_intervals.assert_not_called()
     session_mgr.refresh_session_via_check_login.assert_not_called()
     client.set_session_token.assert_called_once_with("daily_sess")
+    # 重登成功后仅做一次场次探测，预热新会话的场馆上下文
+    api.get_intervals.assert_called_once_with(14, 16, 8, "[67]")
     assert cfg.auth.phpsessid == "daily_sess"
 
 

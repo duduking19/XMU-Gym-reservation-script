@@ -63,7 +63,7 @@ def test_late_course_occupation_response_stops_retrying(stage):
 
 @pytest.mark.parametrize('response,raises', [({'code': 0}, False), ({'code': 19024}, False), ({}, True)])
 def test_weekly_skip_notifies_once_and_continues_even_if_notification_fails(response, raises):
-    cfg = AppConfig(scheduler=SchedulerConfig(weekly_enabled=True, weekly_plan={'7': '16:30-18:00', '1': '15:00-16:30'}),
+    cfg = AppConfig(scheduler=SchedulerConfig(weekly_enabled=True, release_grace_seconds=0, weekly_plan={'7': '16:30-18:00', '1': '15:00-16:30'}),
                     notify=NotifyConfig(enabled=True, channel='feishu', feishu=FeishuConfig(webhook_url='https://example.invalid/test')))
     api = Mock()
     api.get_intervals.return_value = intervals()

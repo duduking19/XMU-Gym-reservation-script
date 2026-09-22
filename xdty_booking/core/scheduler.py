@@ -17,6 +17,9 @@ from xdty_booking.notify.notifier import Notifier
 
 logger = logging.getLogger(__name__)
 
+# execute_booking 返回这些 reason 时，准点后宽限期内视为“尚未放票”而非最终失败
+_NOT_RELEASED_REASONS = ("course_occupied", "slot_missing", "query_failed")
+
 def planned_slot(cfg: AppConfig, visit_date: str) -> Optional[str]:
     """某入场日期应预约的时段：特例表优先，其次每周计划（按星期），非每周模式用固定时段。"""
     override = cfg.scheduler.date_overrides.get(visit_date)
@@ -194,6 +197,8 @@ class BookingScheduler:
             self.client.set_session_token(new_token)
             self.cfg.auth.phpsessid = new_token
             logger.info(f"✅ 已按计划使用账号密码重新登录！新 PHPSESSID: {str(new_token)[:8]}***")
+            # 新会话首次 getInterval 会报“参数错误”，此处预热场馆上下文，避免准点时多花一个来回
+            self._slots_reachable()
             return True
         logger.warning("账号密码重新登录未执行或未成功（未配置 / CAS 异常），回退检查现有会话...")
 
@@ -358,13 +363,23 @@ class BookingScheduler:
                 notifier=self.notifier,
                 on_session_expired=self.ensure_valid_session
             )
-            res = engine.execute_booking(
-                target_date=visit_date,
-                preferred_time=preferred_time,
-                fallback_nearest=False if self.cfg.scheduler.weekly_enabled else self.cfg.scheduler.fallback_nearest,
-                mode="早7点准点抢票"
-            )
-            
+            # 服务端放票不是准点瞬间完成：日期先挂出、时段稍后才从 locked 翻成可约。
+            # 宽限期内时段缺失 / 仍锁定 / 查询失败都视为“尚未放票”继续轮询，超时仍锁定才算排课占用。
+            deadline = time.time() + self.cfg.scheduler.release_grace_seconds
+            while True:
+                res = engine.execute_booking(
+                    target_date=visit_date,
+                    preferred_time=preferred_time,
+                    fallback_nearest=False if self.cfg.scheduler.weekly_enabled else self.cfg.scheduler.fallback_nearest,
+                    mode="早7点准点抢票"
+                )
+                if res.get("reason") not in _NOT_RELEASED_REASONS or time.time() >= deadline:
+                    break
+                if self.status_callback:
+                    self.status_callback(f"⏳ 时段尚未放出 ({res.get('info')})，{int(deadline - time.time())} 秒内持续轮询...")
+                if self._stop_event.wait(2.0):
+                    return {"success": False, "info": "定时任务已被手动终止"}
+
             if res.get("reason") == "course_occupied":
                 message = (f"场馆：{self.cfg.target.stadium_name}\n"
                            f"入场日期：{visit_date}\n计划时段：{preferred_time}\n"

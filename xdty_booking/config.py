@@ -37,6 +37,7 @@ class SchedulerConfig:
     retry_interval_ms: int = 150
     fallback_nearest: bool = True       # 首选时段无名额时是否自动选择最近时段
     pre_check_minutes: int = 5          # 抢票前提前自检并尝试自愈 Session 的分钟数
+    release_grace_seconds: int = 600    # 准点后放票并非瞬时完成：时段缺失/仍锁定时持续轮询的秒数
     weekly_enabled: bool = False
     weekly_plan: Dict[str, str] = field(default_factory=dict)  # 入场日期：1=周一，7=周日
     date_overrides: Dict[str, str] = field(default_factory=dict)  # 特例：入场日期 YYYY-MM-DD -> 时段，优先于计划表
