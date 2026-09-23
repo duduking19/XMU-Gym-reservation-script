@@ -14,7 +14,7 @@ def _scheduler(notifier=None):
     cfg = AppConfig(scheduler=SchedulerConfig(weekly_enabled=True, release_grace_seconds=0, weekly_plan={'6': '16:30-18:00'}))
     cfg.auth.phpsessid = "sess"
     scheduler = BookingScheduler(cfg, Mock(), Mock(), Mock(), Mock(), notifier=notifier or Mock())
-    scheduler.next_booking = (datetime(2026, 9, 18, 7), '2026-09-19', '16:30-18:00')
+    scheduler.next_booking = (datetime(2026, 9, 18, 7), '2026-09-19', ['16:30-18:00'])
     return scheduler
 
 

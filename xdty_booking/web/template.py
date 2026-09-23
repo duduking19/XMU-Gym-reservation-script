@@ -2,6 +2,13 @@ from datetime import datetime, timedelta
 from html import escape
 from xdty_booking.security.auth import get_auth_status
 
+MAX_PRIORITY_SLOTS = 3
+
+def _slot_at(value, index: int) -> str:
+    """取某天第 index 优先级的时段；旧配置里的单个字符串按一个时段处理"""
+    slots = value if isinstance(value, list) else ([value] if value else [])
+    return slots[index] if index < len(slots) else ""
+
 def render_dashboard(data: dict) -> str:
     """生成现代化美观响应式的健身房实时空闲状态与一键预约仪表板页面"""
     # 授权状态检测与处理 (一机一码防护)
@@ -76,19 +83,28 @@ def render_dashboard(data: dict) -> str:
         for t in preset_times
     ])
     weekly_rows_html = "".join(
-        f'<label for="weeklyDay{day}" style="align-self: center; font-weight: 600;">{name}</label>'
-        f'<input id="weeklyDay{day}" class="form-input" list="weeklyTimeOptions" '
-        f'aria-label="{name}预约时段" placeholder="不预约（留空）" '
-        f'value="{escape(weekly_plan.get(str(day), ""), quote=True)}">'
+        f'<label for="weeklyDay{day}_1" style="align-self: center; font-weight: 600;">{name}</label>'
+        + "".join(
+            f'<input id="weeklyDay{day}_{i + 1}" class="form-input" list="weeklyTimeOptions" '
+            f'aria-label="{name}第 {i + 1} 优先级预约时段" '
+            f'placeholder="{"不预约（留空）" if i == 0 else f"备选 {i + 1}（可选）"}" '
+            f'value="{escape(_slot_at(weekly_plan.get(str(day)), i), quote=True)}">'
+            for i in range(MAX_PRIORITY_SLOTS))
         for day, name in enumerate(["周一", "周二", "周三", "周四", "周五", "周六", "周日"], 1)
     )
     weekly_options_html = "".join(f'<option value="{slot}"></option>' for slot, _ in preset_times)
+    override_row_style = f"display: grid; grid-template-columns: minmax(0, 1fr) repeat({MAX_PRIORITY_SLOTS}, minmax(0, 1fr)) 32px; gap: 8px; margin-bottom: 6px;"
     override_rows_html = "".join(
-        f'<div class="override-row" style="display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 32px; gap: 8px; margin-bottom: 6px;">'
+        f'<div class="override-row" style="{override_row_style}">'
         f'<input type="date" class="form-input override-date" aria-label="特例入场日期" value="{escape(str(day), quote=True)}">'
-        f'<input class="form-input override-slot" list="weeklyTimeOptions" aria-label="特例时段" placeholder="16:30-18:00" value="{escape(slot, quote=True)}">'
-        f'<button type="button" class="btn-action" title="删除" onclick="this.parentElement.remove()">✕</button></div>'
-        for day, slot in sorted(date_overrides.items())
+        + "".join(
+            f'<input class="form-input override-slot" list="weeklyTimeOptions" '
+            f'aria-label="特例第 {i + 1} 优先级时段" '
+            f'placeholder="{"16:30-18:00" if i == 0 else f"备选 {i + 1}（可选）"}" '
+            f'value="{escape(_slot_at(slots, i), quote=True)}">'
+            for i in range(MAX_PRIORITY_SLOTS))
+        + '<button type="button" class="btn-action" title="删除" onclick="this.parentElement.remove()">✕</button></div>'
+        for day, slots in sorted(date_overrides.items())
     )
     snipe_time_chips_html = "".join([
         f'<button type="button" class="time-chip {"active" if current_pref_time == t[0] else ""}" data-val="{t[0]}" onclick="setSnipeTime(\'{t[0]}\')">{t[1]}</button>'
@@ -1140,12 +1156,15 @@ def render_dashboard(data: dict) -> str:
                         <span><input type="checkbox" id="schedWeeklyEnabled" {'checked' if weekly_enabled else ''} onchange="toggleWeeklyPlan()"> 按每周计划循环预约</span>
                     </label>
                     <div id="weeklyPlanFields" style="display: {'block' if weekly_enabled else 'none'};">
-                        <p style="font-size: 13px; color: #475569; line-height: 1.7;">按<strong>实际入场日期</strong>填写；留空表示当天不预约。周六的场次在周五 07:00 开抢。每次结束后继续等待下一计划日，严格预约所填时段，满额不改约其他时段。课程占用时跳过当天，并通过已配置的通知渠道提醒。</p>
-                        <div style="display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 8px;">{weekly_rows_html}</div>
+                        <p style="font-size: 13px; color: #475569; line-height: 1.7;">按<strong>实际入场日期</strong>填写；首选留空表示当天不预约。周六的场次在周五 07:00 开抢。每天最多填 3 个时段，<strong>从左到右优先级由高到低</strong>：首选因满额或课程占用约不到时，自动改约下一个备选；所填时段全部约不到才算失败，绝不改约计划外的时段，并通过已配置的通知渠道提醒。</p>
+                        <div style="display: grid; grid-template-columns: 48px repeat({MAX_PRIORITY_SLOTS}, minmax(0, 1fr)); gap: 8px; align-items: center;">
+                            <span></span><span style="font-size: 12px; color: #64748b;">首选</span><span style="font-size: 12px; color: #64748b;">备选 2</span><span style="font-size: 12px; color: #64748b;">备选 3</span>
+                            {weekly_rows_html}
+                        </div>
                         <datalist id="weeklyTimeOptions">{weekly_options_html}</datalist>
                         <p style="font-size: 12px; color: #64748b;">时段格式：16:30-18:00。修改运行中的计划，请先停止，再保存并重新开启。电脑需保持唤醒，服务重启后需重新开启。</p>
                         <div style="margin-top: 12px; font-weight: 600;">特例日期（优先于计划表）</div>
-                        <p style="font-size: 12px; color: #64748b; margin: 4px 0 8px;">指定某个<strong>入场日期</strong>改约其他时段，或给计划表没有的日子加一次预约。过期日期保存时自动清理。</p>
+                        <p style="font-size: 12px; color: #64748b; margin: 4px 0 8px;">指定某个<strong>入场日期</strong>改约其他时段，或给计划表没有的日子加一次预约；同样支持 3 个优先级。过期日期保存时自动清理。</p>
                         <div id="overrideRows">{override_rows_html}</div>
                         <button type="button" class="btn-action" onclick="addOverrideRow()" style="font-size: 12px;">＋ 添加特例</button>
                     </div>
@@ -1789,16 +1808,18 @@ def render_dashboard(data: dict) -> str:
             const dateOffset = parseInt(document.getElementById("schedTargetDateOffset").value || "1");
             const fallbackNearest = document.getElementById("schedFallbackNearest").checked;
             const weeklyEnabled = document.getElementById("schedWeeklyEnabled").checked;
+            // 每天最多三个时段，按输入框顺序即优先级从高到低；留空的跳过
+            const readSlots = (inputs) => [...inputs].map(i => i.value.trim()).filter(Boolean);
             const weeklyPlan = {{}};
             for (let day = 1; day <= 7; day++) {{
-                const slot = document.getElementById(`weeklyDay${{day}}`).value.trim();
-                if (slot) weeklyPlan[String(day)] = slot;
+                const slots = readSlots(document.querySelectorAll(`[id^="weeklyDay${{day}}_"]`));
+                if (slots.length) weeklyPlan[String(day)] = slots;
             }}
             const dateOverrides = {{}};
             document.querySelectorAll("#overrideRows .override-row").forEach(row => {{
                 const d = row.querySelector(".override-date").value.trim();
-                const t = row.querySelector(".override-slot").value.trim();
-                if (d && t) dateOverrides[d] = t;
+                const slots = readSlots(row.querySelectorAll(".override-slot"));
+                if (d && slots.length) dateOverrides[d] = slots;
             }});
 
             return {{
@@ -1825,9 +1846,11 @@ def render_dashboard(data: dict) -> str:
         function addOverrideRow() {{
             const row = document.createElement("div");
             row.className = "override-row";
-            row.style.cssText = "display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 32px; gap: 8px; margin-bottom: 6px;";
+            row.style.cssText = "{override_row_style}";
             row.innerHTML = '<input type="date" class="form-input override-date" aria-label="特例入场日期">'
-                + '<input class="form-input override-slot" list="weeklyTimeOptions" aria-label="特例时段" placeholder="16:30-18:00">'
+                + '<input class="form-input override-slot" list="weeklyTimeOptions" aria-label="特例首选时段" placeholder="16:30-18:00">'
+                + '<input class="form-input override-slot" list="weeklyTimeOptions" aria-label="特例第 2 优先级时段" placeholder="备选 2（可选）">'
+                + '<input class="form-input override-slot" list="weeklyTimeOptions" aria-label="特例第 3 优先级时段" placeholder="备选 3（可选）">'
                 + '<button type="button" class="btn-action" title="删除" onclick="this.parentElement.remove()">✕</button>';
             document.getElementById("overrideRows").appendChild(row);
         }}

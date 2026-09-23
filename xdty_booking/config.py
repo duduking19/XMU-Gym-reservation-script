@@ -2,7 +2,7 @@ import os
 import re
 import yaml
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Any
+from typing import ClassVar, Optional, List, Dict, Any
 
 @dataclass
 class AuthConfig:
@@ -39,8 +39,11 @@ class SchedulerConfig:
     pre_check_minutes: int = 5          # 抢票前提前自检并尝试自愈 Session 的分钟数
     release_grace_seconds: int = 600    # 准点后放票并非瞬时完成：时段缺失/仍锁定时持续轮询的秒数
     weekly_enabled: bool = False
-    weekly_plan: Dict[str, str] = field(default_factory=dict)  # 入场日期：1=周一，7=周日
-    date_overrides: Dict[str, str] = field(default_factory=dict)  # 特例：入场日期 YYYY-MM-DD -> 时段，优先于计划表
+    # 每天可填最多 MAX_SLOTS 个时段，按优先级从高到低；高优先级约不到时自动尝试下一个
+    weekly_plan: Dict[str, List[str]] = field(default_factory=dict)  # 入场日期：1=周一，7=周日
+    date_overrides: Dict[str, List[str]] = field(default_factory=dict)  # 特例：入场日期 YYYY-MM-DD -> 时段，优先于计划表
+
+    MAX_SLOTS: ClassVar[int] = 3
 
     @staticmethod
     def _check_slot(slot) -> str:
@@ -50,23 +53,40 @@ class SchedulerConfig:
             raise ValueError("计划时段结束时间必须晚于开始时间")
         return slot
 
+    @classmethod
+    def _check_slots(cls, value) -> List[str]:
+        """按优先级从高到低的时段列表；旧配置里的单个字符串按一个时段处理"""
+        if value in (None, "", []):
+            return []
+        slots = [value] if isinstance(value, str) else value
+        if not isinstance(slots, list) or len(slots) > cls.MAX_SLOTS:
+            raise ValueError(f"每天最多设置 {cls.MAX_SLOTS} 个优先级时段")
+        slots = [cls._check_slot(s) for s in slots]
+        if len(set(slots)) != len(slots):
+            raise ValueError("同一天的优先级时段不能重复")
+        return slots
+
     def __post_init__(self):
         if not isinstance(self.weekly_enabled, bool) or not isinstance(self.weekly_plan, dict) \
                 or not isinstance(self.date_overrides, dict):
             raise ValueError("每周计划格式错误")
         plan = {}
-        for day, slot in self.weekly_plan.items():
+        for day, slots in self.weekly_plan.items():
             if str(day) not in "1 2 3 4 5 6 7".split():
                 raise ValueError("每周计划的星期必须是 1（周一）至 7（周日）")
-            plan[str(day)] = self._check_slot(slot)
+            slots = self._check_slots(slots)
+            if slots:
+                plan[str(day)] = slots
         if self.weekly_enabled and not plan:
             raise ValueError("每周计划至少需要设置一天")
         self.weekly_plan = plan
         overrides = {}
-        for day, slot in self.date_overrides.items():
+        for day, slots in self.date_overrides.items():
             if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(day)):
                 raise ValueError("特例日期格式应为 YYYY-MM-DD")
-            overrides[str(day)] = self._check_slot(slot)
+            slots = self._check_slots(slots)
+            if slots:
+                overrides[str(day)] = slots
         self.date_overrides = overrides
 
 @dataclass

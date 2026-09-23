@@ -3,7 +3,7 @@ import time
 import logging
 import threading
 from datetime import datetime, timedelta
-from typing import Dict, Any, Optional, Callable
+from typing import Dict, Any, List, Optional, Callable
 
 from xdty_booking.config import AppConfig, load_config
 from xdty_booking.api.client import ApiClient
@@ -20,27 +20,34 @@ logger = logging.getLogger(__name__)
 # execute_booking 返回这些 reason 时，准点后宽限期内视为“尚未放票”而非最终失败
 _NOT_RELEASED_REASONS = ("course_occupied", "slot_missing", "query_failed")
 
-def planned_slot(cfg: AppConfig, visit_date: str) -> Optional[str]:
-    """某入场日期应预约的时段：特例表优先，其次每周计划（按星期），非每周模式用固定时段。"""
+def planned_slots(cfg: AppConfig, visit_date: str) -> List[str]:
+    """某入场日期应预约的时段，按优先级从高到低：特例表优先，其次每周计划（按星期），非每周模式用固定时段。"""
     override = cfg.scheduler.date_overrides.get(visit_date)
     if override:
         return override
     if cfg.scheduler.weekly_enabled:
-        return cfg.scheduler.weekly_plan.get(str(datetime.fromisoformat(visit_date).isoweekday()))
-    return cfg.target.preferred_time
+        return cfg.scheduler.weekly_plan.get(str(datetime.fromisoformat(visit_date).isoweekday()), [])
+    return [cfg.target.preferred_time]
+
+
+def slots_text(slots: List[str], brief: bool = False) -> str:
+    """把优先级时段拼成可读文本；brief 供通知标题使用，只显示首选与总数"""
+    if brief and len(slots) > 1:
+        return f"{slots[0]} 等 {len(slots)} 个时段"
+    return " > ".join(slots)
 
 
 def next_scheduled_booking(cfg: AppConfig, now: datetime, target_time: Optional[str] = None):
-    """返回下次开抢时间、入场日期和时段；星期按入场日期计算。"""
+    """返回下次开抢时间、入场日期和按优先级排序的时段列表；星期按入场日期计算。"""
     hour, minute, second = map(int, (target_time or cfg.scheduler.target_time).split(":"))
     run_at = now.replace(hour=hour, minute=minute, second=second, microsecond=0)
     if run_at <= now:
         run_at += timedelta(days=1)
     for _ in range(7):
         visit_date = (run_at + timedelta(days=cfg.target.target_date_offset)).date().isoformat()
-        slot = planned_slot(cfg, visit_date)
-        if slot:
-            return run_at, visit_date, slot
+        slots = planned_slots(cfg, visit_date)
+        if slots:
+            return run_at, visit_date, slots
         run_at += timedelta(days=1)
     raise ValueError("每周计划至少需要设置一天")
 
@@ -134,14 +141,14 @@ class BookingScheduler:
             logger.error("通知发送异常 [%s]: %s", title, type(e).__name__)
             return {"error": False}
 
-    def _plan_context(self, visit_date: str, preferred_time: str) -> str:
+    def _plan_context(self, visit_date: str, preferred_times: List[str]) -> str:
         return (f"场馆：{self.cfg.target.stadium_name}\n"
-                f"入场日期：{visit_date}\n计划时段：{preferred_time}\n")
+                f"入场日期：{visit_date}\n计划时段：{slots_text(preferred_times)}\n")
 
-    def _missed_window(self, visit_date: str, preferred_time: str) -> Dict[str, Any]:
+    def _missed_window(self, visit_date: str, preferred_times: List[str]) -> Dict[str, Any]:
         info = "已错过本次开抢时间，继续等待下一个计划日"
-        self._notify(title=f"错过开抢时间 {visit_date} {preferred_time}",
-                     content=self._plan_context(visit_date, preferred_time)
+        self._notify(title=f"错过开抢时间 {visit_date} {slots_text(preferred_times, brief=True)}",
+                     content=self._plan_context(visit_date, preferred_times)
                      + f"当前时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                      "原因：到达开抢时刻时服务未在运行或被阻塞，本次未提交预约。")
         return {"success": False, "info": info}
@@ -251,9 +258,9 @@ class BookingScheduler:
                     raise
                 logger.exception("本次每周计划预约异常，将继续下一个计划日")
                 self.last_result = {"success": False, "info": str(e)}
-                _, visit_date, slot = self.next_booking
-                self._notify(title=f"预约流程异常 {visit_date} {slot}",
-                             content=self._plan_context(visit_date, slot)
+                _, visit_date, slots = self.next_booking
+                self._notify(title=f"预约流程异常 {visit_date} {slots_text(slots, brief=True)}",
+                             content=self._plan_context(visit_date, slots)
                              + f"异常：{type(e).__name__}: {e}\n系统将继续执行下一个计划日，请检查服务器日志。")
             if not self.cfg.scheduler.weekly_enabled:
                 return self.last_result
@@ -272,7 +279,7 @@ class BookingScheduler:
 
         try:
             # 计算目标时间
-            target_dt, visit_date, preferred_time = self.next_booking or next_scheduled_booking(self.cfg, datetime.now(), target_time)
+            target_dt, visit_date, preferred_times = self.next_booking or next_scheduled_booking(self.cfg, datetime.now(), target_time)
 
             target_ts = target_dt.timestamp()
             pre_check_minutes = max(1, self.cfg.scheduler.pre_check_minutes)
@@ -281,7 +288,7 @@ class BookingScheduler:
             logger.info(f"📅 下一个目标抢票时刻: {target_dt.strftime('%Y-%m-%d %H:%M:%S')}")
             logger.info(f"⏱️ 提前自检预热时刻: {pre_check_dt.strftime('%Y-%m-%d %H:%M:%S')} (提前 {pre_check_minutes} 分钟)")
             if self.status_callback:
-                self.status_callback(f"等待 {target_dt.strftime('%m-%d %H:%M:%S')} 开抢，预约 {visit_date} {preferred_time}")
+                self.status_callback(f"等待 {target_dt.strftime('%m-%d %H:%M:%S')} 开抢，预约 {visit_date} {slots_text(preferred_times)}")
 
             # 1. 如果当前距离预检时间尚早，进入纯静默休眠（免打扰，不发心跳、不弹微信、不改代理）
             if datetime.now() < pre_check_dt:
@@ -313,7 +320,7 @@ class BookingScheduler:
                 return {"success": False, "info": "定时任务已被手动终止"}
 
             if self.cfg.scheduler.weekly_enabled and datetime.now() > target_dt + timedelta(minutes=1):
-                return self._missed_window(visit_date, preferred_time)
+                return self._missed_window(visit_date, preferred_times)
 
             # 2. 到达预检时刻：仅在此刻全面执行 Session 存活探测与失效自愈 (此时捕获的凭证最新鲜有效)
             logger.info(f"🔍 到达抢票前预检时刻 ({datetime.now().strftime('%H:%M:%S')})，检查凭证有效性...")
@@ -322,8 +329,8 @@ class BookingScheduler:
             valid = self.ensure_valid_session()
             if not valid:
                 logger.error("⚠️ 提前预检自愈未成功，抢票将按当前状态继续尝试")
-                self._notify(title=f"预检登录失败 {visit_date} {preferred_time}",
-                             content=self._plan_context(visit_date, preferred_time)
+                self._notify(title=f"预检登录失败 {visit_date} {slots_text(preferred_times, brief=True)}",
+                             content=self._plan_context(visit_date, preferred_times)
                              + f"账号密码重新登录与会话续登均失败，{target_dt.strftime('%H:%M')} 抢票大概率失败。\n"
                              "请立即打开控制台登录页手动登录，服务会在开抢时自动采用新凭据。")
 
@@ -350,7 +357,7 @@ class BookingScheduler:
             if self._stop_event.is_set():
                 return {"success": False, "info": "定时任务已被手动终止"}
             if self.cfg.scheduler.weekly_enabled and datetime.now() > target_dt + timedelta(minutes=1):
-                return self._missed_window(visit_date, preferred_time)
+                return self._missed_window(visit_date, preferred_times)
 
             # 5. 准点瞬间：极速并发抢票！
             logger.info(f"⚡ [准点] {datetime.now().strftime('%H:%M:%S')} 到达放号时刻！立即执行极速抢票！")
@@ -365,30 +372,45 @@ class BookingScheduler:
             )
             # 服务端放票不是准点瞬间完成：日期先挂出、时段稍后才从 locked 翻成可约。
             # 宽限期内时段缺失 / 仍锁定 / 查询失败都视为“尚未放票”继续轮询，超时仍锁定才算排课占用。
+            # 每一轮按优先级从高到低依次尝试：明确失败（名额已满等）的时段立刻让位给下一优先级，
+            # 仍属“尚未放票”的留在队列里下一轮再试，全部时段都已定论或超过宽限期才收尾。
+            # ponytail: 优先级 1 还没挂出、优先级 2 已可约时会订到 2；要严格优先可加一个“放票等待窗”再降级。
             deadline = time.time() + self.cfg.scheduler.release_grace_seconds
+            results: Dict[str, Dict[str, Any]] = {}
+            pending = list(preferred_times)
             while True:
-                res = engine.execute_booking(
-                    target_date=visit_date,
-                    preferred_time=preferred_time,
-                    fallback_nearest=False if self.cfg.scheduler.weekly_enabled else self.cfg.scheduler.fallback_nearest,
-                    mode="早7点准点抢票"
-                )
-                if res.get("reason") not in _NOT_RELEASED_REASONS or time.time() >= deadline:
+                for slot_time in list(pending):
+                    res = results[slot_time] = engine.execute_booking(
+                        target_date=visit_date,
+                        preferred_time=slot_time,
+                        fallback_nearest=False if self.cfg.scheduler.weekly_enabled else self.cfg.scheduler.fallback_nearest,
+                        mode="早7点准点抢票" if len(preferred_times) == 1 else f"早7点准点抢票(优先级{preferred_times.index(slot_time) + 1})"
+                    )
+                    if res.get("success"):
+                        break
+                    if res.get("reason") not in _NOT_RELEASED_REASONS:
+                        pending.remove(slot_time)
+                        logger.warning(f"时段 [{slot_time}] 无法预约（{res.get('info')}），尝试下一优先级")
+                if res.get("success") or not pending or time.time() >= deadline:
                     break
                 if self.status_callback:
                     self.status_callback(f"⏳ 时段尚未放出 ({res.get('info')})，{int(deadline - time.time())} 秒内持续轮询...")
                 if self._stop_event.wait(2.0):
                     return {"success": False, "info": "定时任务已被手动终止"}
 
-            if res.get("reason") == "course_occupied":
-                message = (f"场馆：{self.cfg.target.stadium_name}\n"
-                           f"入场日期：{visit_date}\n计划时段：{preferred_time}\n"
-                           f"原因：{res.get('info')}\n"
-                           "当天不再预约，也不改约其他时段。"
-                           + ("系统将继续执行下一个计划日。" if self.cfg.scheduler.weekly_enabled else "本次定时任务已结束。"))
+            tail = "系统将继续执行下一个计划日。" if self.cfg.scheduler.weekly_enabled else "本次定时任务已结束。"
+            detail = "".join(f"· {t}：{results[t].get('info')}\n" for t in preferred_times if t in results)
+            if res.get("success"):
+                logger.info(f"🎉 准点抢票大获全胜: {res.get('info')}")
+                if self.status_callback:
+                    self.status_callback(f"🎉 准点抢票成功！{res.get('info')}")
+            elif all(r.get("reason") == "course_occupied" for r in results.values()):
+                message = (self._plan_context(visit_date, preferred_times) + detail
+                           + "当天不再预约，也不改约计划外的其他时段。" + tail)
                 try:
                     res["notification"] = self.notifier.send(
-                        title=f"课程占用，已跳过 {visit_date} {preferred_time} 的预约", content=message)
+                        title=f"课程占用，已跳过 {visit_date} {slots_text(preferred_times, brief=True)} 的预约",
+                        content=message)
                     if not any(res["notification"].values()):
                         logger.warning("课程占用跳过通知未送达，请检查通知配置或网络")
                 except Exception as e:
@@ -397,20 +419,15 @@ class BookingScheduler:
                 logger.info(res["info"])
                 if self.status_callback:
                     self.status_callback(res["info"])
-            elif res.get("success"):
-                logger.info(f"🎉 准点抢票大获全胜: {res.get('info')}")
-                if self.status_callback:
-                    self.status_callback(f"🎉 准点抢票成功！{res.get('info')}")
             else:
                 logger.error(f"准点抢票结果: {res.get('info')}")
                 if self.status_callback:
                     self.status_callback(f"⚠️ 准点抢票结束: {res.get('info')}")
                 kind = classify_failure(res)
                 res["notification"] = self._notify(
-                    title=f"{kind} {visit_date} {preferred_time}",
-                    content=self._plan_context(visit_date, preferred_time)
-                    + f"原因：{res.get('info')}\n"
-                    + ("系统将继续执行下一个计划日。" if self.cfg.scheduler.weekly_enabled else "本次定时任务已结束。"))
+                    title=f"{kind} {visit_date} {slots_text(preferred_times, brief=True)}",
+                    content=self._plan_context(visit_date, preferred_times)
+                    + f"各优先级结果：\n{detail}" + tail)
 
             return res
         finally:

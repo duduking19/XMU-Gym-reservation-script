@@ -89,8 +89,8 @@ def test_weekly_skip_notifies_once_and_continues_even_if_notification_fails(resp
         if raises:
             post.side_effect = TimeoutError('offline')
         scheduler.run()
-    assert seen == [(datetime(2026, 9, 19, 7), '2026-09-20', '16:30-18:00'),
-                    (datetime(2026, 9, 20, 7), '2026-09-21', '15:00-16:30')]
+    assert seen == [(datetime(2026, 9, 19, 7), '2026-09-20', ['16:30-18:00']),
+                    (datetime(2026, 9, 20, 7), '2026-09-21', ['15:00-16:30'])]
     assert post.call_count == 1
     text = post.call_args.kwargs['json']['content']['text']
     for value in ['课程占用', '2026-09-20', '16:30-18:00', '翔安校区健身房', '跳过', '下一']:

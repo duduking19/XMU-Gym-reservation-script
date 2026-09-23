@@ -20,7 +20,7 @@ from xdty_booking.auth.session_manager import SessionManager
 from xdty_booking.auth.harvester_service import HarvestService
 from xdty_booking.solver.captcha_solver import CaptchaSolver
 from xdty_booking.core.booking_engine import BookingEngine
-from xdty_booking.core.scheduler import BookingScheduler, next_scheduled_booking, planned_slot
+from xdty_booking.core.scheduler import BookingScheduler, next_scheduled_booking, planned_slots, slots_text
 from xdty_booking.notify.notifier import Notifier
 from xdty_booking.web.template import render_dashboard, render_qr_login_page
 from xdty_booking.utils.logger import setup_logger
@@ -106,7 +106,7 @@ class SchedulerManager:
             upcoming = getattr(self._scheduler, "next_booking", None)
             if isinstance(upcoming, tuple):
                 self._next_run_dt = upcoming[0].strftime("%Y-%m-%d %H:%M:%S")
-                self._preferred_time = upcoming[2]
+                self._preferred_time = slots_text(upcoming[2])
             return {
                 "running": self._is_running,
                 "status_text": self._status_text,
@@ -475,12 +475,12 @@ def query_gym_status(config_path: Optional[str] = None, auto_heal: bool = True) 
     if intervals and hasattr(intervals, "time_slot_list"):
         data["date_list"] = [{"date": d.date, "week": d.week} for d in getattr(intervals, "date_list", [])]
         for g in intervals.time_slot_list:
-            preferred_time = planned_slot(cfg, g.date)
+            preferred_times = planned_slots(cfg, g.date)
             group_data = {
                 "date": g.date,
                 "week_name": g.week_name,
                 "time_range": g.time_range,
-                "is_preferred": (g.time_range == preferred_time),
+                "is_preferred": (g.time_range in preferred_times),
                 "slots": []
             }
             for s in g.slots:
