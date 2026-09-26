@@ -66,7 +66,7 @@ def test_notifier_booking_success_template():
     with patch.object(notifier, "send", return_value={"pushplus": True}) as mock_send:
         slot_info = {
             "stadium_name": "翔安校区健身房",
-            "area_name": "爱秋体育馆",
+            "area_name": "<img src=x onerror=alert(1)>",
             "date": "2026-09-12",
             "time_range": "19:30-21:00",
             "interval_id": "3080",
@@ -78,6 +78,8 @@ def test_notifier_booking_success_template():
         _, kwargs = mock_send.call_args
         assert "19:30-21:00" in kwargs["title"]
         assert "翔安校区健身房" in kwargs["content"]
+        assert "<img src=x onerror=alert(1)>" not in kwargs["html_content"]
+        assert "&lt;img src=x onerror=alert(1)&gt;" in kwargs["html_content"]
 
 
 @pytest.fixture

@@ -23,6 +23,6 @@ def test_web_server_can_bind_only_to_loopback():
     args = build_cli_parser().parse_args(['web', '--host', '127.0.0.1'])
     server = MagicMock()
     server.serve_forever.side_effect = KeyboardInterrupt
-    with patch('xdty_booking.web.server.HTTPServer', return_value=server) as factory:
+    with patch('xdty_booking.web.server.ThreadingHTTPServer', return_value=server) as factory:
         run_server(host=args.host)
     assert factory.call_args.args[0] == ('127.0.0.1', 8080)

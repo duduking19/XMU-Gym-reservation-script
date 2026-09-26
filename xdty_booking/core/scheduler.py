@@ -388,6 +388,9 @@ class BookingScheduler:
                     )
                     if res.get("success"):
                         break
+                    if res.get("reason") in ("outcome_unknown", "booking_in_progress"):
+                        pending.clear()
+                        break
                     if res.get("reason") not in _NOT_RELEASED_REASONS:
                         pending.remove(slot_time)
                         logger.warning(f"时段 [{slot_time}] 无法预约（{res.get('info')}），尝试下一优先级")

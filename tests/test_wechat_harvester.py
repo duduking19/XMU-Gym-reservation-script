@@ -30,7 +30,7 @@ def test_wechat_harvester_launch_by_protocol():
     harvester = WeChatHarvester(appid="wx81a2b2fa90759cb7")
     with patch.object(harvester, 'find_and_activate_window', return_value=False):
         with patch.object(harvester, 'find_desktop_shortcut', return_value=None):
-            with patch("os.startfile") as mock_startfile:
+            with patch("os.startfile", create=True) as mock_startfile:
                 ok = harvester.launch_miniprogram()
                 assert ok is True
                 mock_startfile.assert_called_once_with("weixin://launchapplet/?app_id=wx81a2b2fa90759cb7")
@@ -45,7 +45,7 @@ def test_wechat_harvester_launch_by_shortcut():
     harvester = WeChatHarvester()
     with patch.object(harvester, 'find_and_activate_window', return_value=False):
         with patch.object(harvester, 'find_desktop_shortcut', return_value="C:\\mock\\厦大体育.lnk"):
-            with patch("os.startfile") as mock_startfile:
+            with patch("os.startfile", create=True) as mock_startfile:
                 ok = harvester.launch_miniprogram()
                 assert ok is True
                 mock_startfile.assert_called_once_with("C:\\mock\\厦大体育.lnk")
@@ -68,4 +68,3 @@ def test_find_wechat_appex_from_directory_scan():
                     found = harvester.find_wechat_appex()
                     assert found is not None
                     assert "WeChatAppEx.exe" in found
-

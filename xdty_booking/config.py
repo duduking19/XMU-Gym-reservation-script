@@ -1,8 +1,71 @@
 import os
 import re
+import json
+import tempfile
+import threading
 import yaml
+from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import ClassVar, Optional, List, Dict, Any
+from typing import ClassVar, Optional, List, Dict, Any, Callable
+
+_CONFIG_LOCK = threading.RLock()
+
+@contextmanager
+def _locked_config(path: str):
+    """同一配置的读改写跨线程、跨进程串行化。"""
+    with _CONFIG_LOCK:
+        fd = os.open(path + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
+        locked = False
+        try:
+            if os.name == "nt":
+                import msvcrt
+                os.write(fd, b"0") if os.fstat(fd).st_size == 0 else None
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            locked = True
+            yield
+        finally:
+            if locked:
+                if os.name == "nt":
+                    import msvcrt
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+
+def _write_private(path: str, content: str):
+    directory = os.path.dirname(os.path.abspath(path))
+    fd, tmp_path = tempfile.mkstemp(prefix=".config-", dir=directory, text=True)
+    try:
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+def _update_config(path: str, edit: Callable[[str], str]) -> bool:
+    with _locked_config(path):
+        if not os.path.exists(path):
+            return False
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+        _write_private(path, edit(content))
+        return True
+
+def ensure_config_file(path: str, example_path: str) -> str:
+    with _locked_config(path):
+        if not os.path.exists(path):
+            with open(example_path, "r", encoding="utf-8") as f:
+                _write_private(path, f.read())
+    return path
 
 @dataclass
 class AuthConfig:
@@ -16,6 +79,16 @@ class AuthConfig:
     cas_username: str = ""  # 统一身份认证账号密码，用于 checkLogin 失效后的自动重新登录
     cas_password: str = ""
 
+    def __post_init__(self):
+        if self.auth_params is None:
+            self.auth_params = {}
+        if not isinstance(self.auth_params, dict):
+            raise ValueError("auth.auth_params 必须是映射")
+        if self.phpsessid is None:
+            self.phpsessid = ""
+        if not isinstance(self.phpsessid, str):
+            raise ValueError("auth.phpsessid 必须是字符串")
+
 @dataclass
 class TargetConfig:
     stadium_id: int = 16
@@ -28,6 +101,11 @@ class TargetConfig:
     preferred_time: str = "19:30-21:00"
     target_date_offset: int = 1  # 0 为今天，1 为明天
     user_range: str = "[67]"
+
+    def __post_init__(self):
+        if type(self.target_date_offset) is not int or self.target_date_offset not in (0, 1):
+            raise ValueError("预约日期偏移量只能是 0 或 1")
+        SchedulerConfig._check_slot(self.preferred_time)
 
 @dataclass
 class SchedulerConfig:
@@ -67,6 +145,22 @@ class SchedulerConfig:
         return slots
 
     def __post_init__(self):
+        if not isinstance(self.target_time, str) or not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d", self.target_time):
+            raise ValueError("定时预约时间格式应为 HH:MM:SS")
+        for name in ("retry_count", "retry_interval_ms", "pre_check_minutes", "release_grace_seconds"):
+            value = getattr(self, name)
+            if type(value) is not int or value < 0:
+                raise ValueError(f"scheduler.{name} 必须是非负整数")
+        if not 1 <= self.retry_count <= 5:
+            raise ValueError("scheduler.retry_count 必须在 1 到 5 之间")
+        if not 100 <= self.retry_interval_ms <= 10000:
+            raise ValueError("scheduler.retry_interval_ms 必须在 100 到 10000 毫秒之间")
+        if not 1 <= self.pre_check_minutes <= 60:
+            raise ValueError("scheduler.pre_check_minutes 必须在 1 到 60 分钟之间")
+        if not 0 <= self.release_grace_seconds <= 600:
+            raise ValueError("scheduler.release_grace_seconds 必须在 0 到 600 秒之间")
+        if type(self.advance_ms) is not int or not 0 <= self.advance_ms <= 1000:
+            raise ValueError("scheduler.advance_ms 必须在 0 到 1000 毫秒之间")
         if not isinstance(self.weekly_enabled, bool) or not isinstance(self.weekly_plan, dict) \
                 or not isinstance(self.date_overrides, dict):
             raise ValueError("每周计划格式错误")
@@ -146,12 +240,18 @@ def load_config(config_path: str = "config/config.yaml") -> AppConfig:
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Config file not found: {config_path}")
     with open(config_path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f) or {}
+        data = yaml.safe_load(f)
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        raise ValueError("配置文件顶层必须是映射")
     
-    auth_data = data.get("auth", {})
-    target_data = data.get("target", {})
-    scheduler_data = data.get("scheduler", {})
-    notify_data = data.get("notify", {})
+    auth_data = data.get("auth") or {}
+    target_data = data.get("target") or {}
+    scheduler_data = data.get("scheduler") or {}
+    notify_data = data.get("notify") or {}
+    if any(not isinstance(section, dict) for section in (auth_data, target_data, scheduler_data, notify_data)):
+        raise ValueError("配置分区必须是映射")
 
     # 递归构建 NotifyConfig (支持 pushplus_token 极简单行写法)
     pushplus_raw = notify_data.get("pushplus")
@@ -200,8 +300,11 @@ def load_config(config_path: str = "config/config.yaml") -> AppConfig:
         if "venue_id" not in target_data:
             target_cfg.venue_id = 6
 
+    base_url = data.get("base_url") or AppConfig.base_url
+    if not isinstance(base_url, str):
+        raise ValueError("base_url 必须是字符串")
     return AppConfig(
-        base_url=data.get("base_url", "https://xdty.xmu.edu.cn/bdlp_h5_fitness_test"),
+        base_url=base_url,
         auth=_build_dataclass(AuthConfig, auth_data),
         target=target_cfg,
         scheduler=_build_dataclass(SchedulerConfig, scheduler_data),
@@ -212,65 +315,43 @@ def save_phpsessid(config_path: str, new_token: str) -> bool:
     """
     持久化回写新的 PHPSESSID 至配置文件，保留原有注释与缩进
     """
-    if not os.path.exists(config_path):
-        return False
-
-    import re
-    with open(config_path, "r", encoding="utf-8") as f:
-        content = f.read()
-
-    pattern = r'(phpsessid:\s*)(["\']?[a-zA-Z0-9_-]*["\']?)'
-    if re.search(pattern, content):
-        new_content = re.sub(pattern, rf'\g<1>"{new_token}"', content, count=1)
-    else:
+    if not isinstance(new_token, str) or not new_token:
+        raise ValueError("PHPSESSID 不能为空")
+    def edit(content: str) -> str:
+        pattern = r'(?m)^(\s*phpsessid:[ \t]*)([^\r\n]*)'
+        if re.search(pattern, content):
+            return re.sub(pattern, lambda m: m.group(1) + json.dumps(new_token), content, count=1)
         data = yaml.safe_load(content) or {}
-        if "auth" not in data:
-            data["auth"] = {}
-        data["auth"]["phpsessid"] = new_token
-        new_content = yaml.dump(data, allow_unicode=True, sort_keys=False)
-
-    with open(config_path, "w", encoding="utf-8") as f:
-        f.write(new_content)
-    return True
+        data.setdefault("auth", {})["phpsessid"] = new_token
+        return yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
+    return _update_config(config_path, edit)
 
 def save_cas_credentials(config_path: str, username: str, password: str) -> bool:
     """持久化统一身份认证账号密码至配置文件（明文，依赖文件权限保护）"""
-    if not os.path.exists(config_path):
-        return False
-    with open(config_path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f) or {}
-    if not isinstance(data.get("auth"), dict):
-        data["auth"] = {}
-    data["auth"]["cas_username"] = username
-    data["auth"]["cas_password"] = password
-    with open(config_path, "w", encoding="utf-8") as f:
-        f.write(yaml.dump(data, allow_unicode=True, sort_keys=False))
-    return True
+    def edit(content: str) -> str:
+        data = yaml.safe_load(content) or {}
+        if not isinstance(data.get("auth"), dict):
+            data["auth"] = {}
+        data["auth"]["cas_username"] = username
+        data["auth"]["cas_password"] = password
+        return yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
+    return _update_config(config_path, edit)
 
 def save_auth_params(config_path: str, params: Dict[str, Any]) -> bool:
     """
     持久化回写 checkLogin 续登参数 auth_params 至配置文件
     """
-    if not os.path.exists(config_path):
-        return False
-
-    with open(config_path, "r", encoding="utf-8") as f:
-        content = f.read()
-
-    data = yaml.safe_load(content) or {}
-    if "auth" not in data or not isinstance(data["auth"], dict):
-        data["auth"] = {}
-    if "auth_params" not in data["auth"] or not isinstance(data["auth"]["auth_params"], dict):
-        data["auth"]["auth_params"] = {}
-
-    data["auth"]["auth_params"].update(params)
-    if "uid" in params and params["uid"]:
-        data["auth"]["uid"] = str(params["uid"])
-
-    new_content = yaml.dump(data, allow_unicode=True, sort_keys=False)
-    with open(config_path, "w", encoding="utf-8") as f:
-        f.write(new_content)
-    return True
+    def edit(content: str) -> str:
+        data = yaml.safe_load(content) or {}
+        if not isinstance(data.get("auth"), dict):
+            data["auth"] = {}
+        if not isinstance(data["auth"].get("auth_params"), dict):
+            data["auth"]["auth_params"] = {}
+        data["auth"]["auth_params"].update(params)
+        if params.get("uid"):
+            data["auth"]["uid"] = str(params["uid"])
+        return yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
+    return _update_config(config_path, edit)
 
 def save_target_and_scheduler_config(
     config_path: str,
@@ -280,29 +361,21 @@ def save_target_and_scheduler_config(
     """
     持久化回写用户选择的目标场馆地点、预约时段以及早 7 点抢票定时配置至配置文件
     """
-    if not os.path.exists(config_path):
-        return False
-
-    with open(config_path, "r", encoding="utf-8") as f:
-        content = f.read()
-
-    data = yaml.safe_load(content) or {}
-    if not isinstance(data, dict):
-        data = {}
-
-    if target_updates:
-        if "target" not in data or not isinstance(data["target"], dict):
-            data["target"] = {}
-        data["target"].update(target_updates)
-
-    if scheduler_updates:
-        if "scheduler" not in data or not isinstance(data["scheduler"], dict):
-            data["scheduler"] = {}
-        data["scheduler"].update(scheduler_updates)
-
-    # 先验证合并后的计划，非法输入不能覆盖原配置或登录凭据。
-    _build_dataclass(SchedulerConfig, data.get("scheduler", {}))
-    new_content = yaml.dump(data, allow_unicode=True, sort_keys=False)
-    with open(config_path, "w", encoding="utf-8") as f:
-        f.write(new_content)
-    return True
+    if target_updates is not None and not isinstance(target_updates, dict) or scheduler_updates is not None and not isinstance(scheduler_updates, dict):
+        raise ValueError("目标与定时配置必须是映射")
+    def edit(content: str) -> str:
+        data = yaml.safe_load(content) or {}
+        if not isinstance(data, dict):
+            raise ValueError("配置文件顶层必须是映射")
+        if target_updates:
+            if not isinstance(data.get("target"), dict):
+                data["target"] = {}
+            data["target"].update(target_updates)
+        if scheduler_updates:
+            if not isinstance(data.get("scheduler"), dict):
+                data["scheduler"] = {}
+            data["scheduler"].update(scheduler_updates)
+        _build_dataclass(TargetConfig, data.get("target"))
+        _build_dataclass(SchedulerConfig, data.get("scheduler"))
+        return yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
+    return _update_config(config_path, edit)

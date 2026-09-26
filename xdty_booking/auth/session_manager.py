@@ -51,6 +51,7 @@ class SessionManager:
             return None
 
         logger.info("🔄 正在通过 checkLogin 执行纯 HTTP 自动续登...")
+        old_phpsessid = self.phpsessid
         success, new_phpsessid, res = self.api.check_login(self.auth_params)
         if success and new_phpsessid:
             self.update_token(new_phpsessid)
@@ -60,9 +61,13 @@ class SessionManager:
                 if isinstance(sub_res, dict) and sub_res.get("status") == 1:
                     logger.info(f"🎉 纯 HTTP 自动续登成功且 mySubscribe 验证通过！新 Session: {new_phpsessid[:8]}***")
                 else:
-                    logger.warning(f"⚠️ checkLogin 换票成功但 mySubscribe 验证未通过: {sub_res}")
+                    logger.warning("⚠️ checkLogin 换票成功但 mySubscribe 验证未通过")
+                    self.update_token(old_phpsessid)
+                    return None
             except Exception as e:
-                logger.warning(f"mySubscribe 验证异常: {e}")
+                logger.warning("mySubscribe 验证异常: %s", type(e).__name__)
+                self.update_token(old_phpsessid)
+                return None
 
             # 持久化回写 config
             if self.config_path:
@@ -70,12 +75,11 @@ class SessionManager:
                     from xdty_booking.config import save_phpsessid
                     save_phpsessid(self.config_path, new_phpsessid)
                 except Exception as e:
-                    logger.warning(f"持久化新 PHPSESSID 异常: {e}")
+                    logger.warning("持久化新 PHPSESSID 异常: %s", type(e).__name__)
 
             return new_phpsessid
         else:
-            info = res.get("info", "未知") if isinstance(res, dict) else str(res)
-            logger.warning(f"checkLogin 续登失败: {info}")
+            logger.warning("checkLogin 续登失败")
             return None
 
     def refresh_session_via_password(self) -> Optional[str]:
@@ -87,7 +91,7 @@ class SessionManager:
         try:
             auth = load_config(self.config_path).auth
         except Exception as e:
-            logger.warning(f"读取配置以获取 CAS 账号密码失败: {e}")
+            logger.warning("读取配置以获取 CAS 账号密码失败: %s", type(e).__name__)
             return None
         if not (auth.cas_username and auth.cas_password):
             return None
@@ -96,7 +100,7 @@ class SessionManager:
         try:
             res = CasQrLoginClient().password_login(auth.cas_username, auth.cas_password)
         except Exception as e:
-            logger.warning(f"账号密码重新登录失败: {e}")
+            logger.warning("账号密码重新登录失败: %s", type(e).__name__)
             return None
 
         new_phpsessid = res.get("phpsessid")
@@ -109,7 +113,7 @@ class SessionManager:
             if self.auth_params:
                 save_auth_params(self.config_path, self.auth_params)
         except Exception as e:
-            logger.warning(f"持久化账号密码登录凭据异常: {e}")
+            logger.warning("持久化账号密码登录凭据异常: %s", type(e).__name__)
         logger.info(f"🎉 账号密码重新登录成功！新 Session: {new_phpsessid[:8]}***")
         return new_phpsessid
 
@@ -147,10 +151,10 @@ class SessionManager:
             # 失效或未登录时通常返回 {"status": -1, "info": "..."} 或 status: 0
             if isinstance(resp, dict) and resp.get("status") == 1:
                 return True
-            logger.warning(f"Session 存活检测未通过: {resp}")
+            logger.warning("Session 存活检测未通过")
             return False
         except Exception as e:
-            logger.error(f"Session 存活检测异常: {e}")
+            logger.error("Session 存活检测异常: %s", type(e).__name__)
             return False
 
     def adopt_config_credentials(self):
@@ -161,7 +165,7 @@ class SessionManager:
         try:
             auth = load_config(self.config_path).auth
         except Exception as e:
-            logger.debug(f"读取配置文件凭据失败，沿用内存凭据: {e}")
+            logger.debug("读取配置文件凭据失败，沿用内存凭据: %s", type(e).__name__)
             return
         if auth.phpsessid and auth.phpsessid != self.phpsessid:
             self.update_token(auth.phpsessid)

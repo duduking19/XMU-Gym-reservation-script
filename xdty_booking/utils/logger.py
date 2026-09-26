@@ -43,6 +43,8 @@ def setup_logger(name: str = "xdty_booking", level: int = logging.INFO) -> loggi
             os.makedirs(logs_dir, exist_ok=True)
             log_path = os.path.join(logs_dir, "booking.log")
             file_handler = logging.FileHandler(log_path, encoding="utf-8")
+            if os.name != "nt":
+                os.chmod(log_path, 0o600)
             file_handler.setFormatter(formatter)
             root_logger.addHandler(file_handler)
         except Exception:

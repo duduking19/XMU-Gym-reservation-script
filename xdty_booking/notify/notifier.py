@@ -5,6 +5,7 @@ import json
 import logging
 import smtplib
 import time
+from html import escape
 from email.header import Header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -67,7 +68,7 @@ class Notifier:
     def _send_pushplus(self, title: str, content: str) -> bool:
         """PushPlus 微信推送通道"""
         try:
-            url = "http://www.pushplus.plus/send"
+            url = "https://www.pushplus.plus/send"
             payload = {
                 "token": self.cfg.pushplus.token,
                 "title": title,
@@ -80,10 +81,10 @@ class Notifier:
                 logger.info("✅ PushPlus 微信推送成功！")
                 return True
             else:
-                logger.error(f"❌ PushPlus 推送失败: {res_json.get('msg')}")
+                logger.error("❌ PushPlus 推送失败，错误码: %s", res_json.get("code"))
                 return False
         except Exception as e:
-            logger.error(f"❌ PushPlus 推送异常: {e}")
+            logger.error("❌ PushPlus 推送异常: %s", type(e).__name__)
             return False
 
     def _send_email(self, title: str, text_content: str, html_content: str) -> bool:
@@ -109,10 +110,10 @@ class Notifier:
             server.login(ec.sender, ec.password)
             server.sendmail(ec.sender, ec.to_addrs, msg.as_string())
             server.quit()
-            logger.info(f"✅ 邮件通知发送成功！已投递至: {ec.to_addrs}")
+            logger.info("✅ 邮件通知发送成功")
             return True
         except Exception as e:
-            logger.error(f"❌ 邮件发送失败: {e}")
+            logger.error("❌ 邮件发送失败: %s", type(e).__name__)
             return False
 
     def _send_serverchan(self, title: str, content: str) -> bool:
@@ -125,10 +126,10 @@ class Notifier:
                 logger.info("✅ Server酱推送成功！")
                 return True
             else:
-                logger.error(f"❌ Server酱推送失败: {res_json.get('message')}")
+                logger.error("❌ Server酱推送失败，错误码: %s", res_json.get("code"))
                 return False
         except Exception as e:
-            logger.error(f"❌ Server酱推送异常: {e}")
+            logger.error("❌ Server酱推送异常: %s", type(e).__name__)
             return False
 
     def _send_bark(self, title: str, content: str) -> bool:
@@ -148,10 +149,10 @@ class Notifier:
                 logger.info("✅ Bark 推送成功！")
                 return True
             else:
-                logger.error(f"❌ Bark 推送失败: {resp.text}")
+                logger.error("❌ Bark 推送失败，HTTP %s", resp.status_code)
                 return False
         except Exception as e:
-            logger.error(f"❌ Bark 推送异常: {e}")
+            logger.error("❌ Bark 推送异常: %s", type(e).__name__)
             return False
 
     def _send_feishu(self, title: str, content: str) -> bool:
@@ -205,16 +206,20 @@ class Notifier:
 ------------------------------------------------
 请在微信小程序【厦大体育】或系统历史记录中核对。"""
 
+        safe = {"mode": escape(str(mode)), "venue": escape(str(venue)),
+                "area": escape(str(area_name)), "date": escape(str(date)),
+                "time": escape(str(time_slot)),
+                "interval": escape(str(slot_info.get("interval_id", "N/A")))}
         html = f"""
         <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 500px; padding: 20px; border-radius: 10px; background: #f0fdf4; border: 1px solid #bbf7d0;">
             <h2 style="color: #166534; margin-top: 0;">🎉 厦大体育馆抢票成功！</h2>
             <p style="color: #374151; font-size: 14px;">您的场地已成功完成预约下单，详细信息如下：</p>
             <table style="width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px;">
-                <tr><td style="padding: 6px 0; color: #6b7280;">预约模式:</td><td style="font-weight: bold; color: #1f2937;">{mode}</td></tr>
-                <tr><td style="padding: 6px 0; color: #6b7280;">场馆名称:</td><td style="font-weight: bold; color: #1f2937;">{venue} - {area_name}</td></tr>
-                <tr><td style="padding: 6px 0; color: #6b7280;">预约日期:</td><td style="font-weight: bold; color: #1f2937;">{date}</td></tr>
-                <tr><td style="padding: 6px 0; color: #6b7280;">预约时段:</td><td style="font-weight: bold; color: #15803d; font-size: 16px;">{time_slot}</td></tr>
-                <tr><td style="padding: 6px 0; color: #6b7280;">场次 ID:</td><td style="color: #1f2937;">{slot_info.get('interval_id', 'N/A')}</td></tr>
+                <tr><td style="padding: 6px 0; color: #6b7280;">预约模式:</td><td style="font-weight: bold; color: #1f2937;">{safe['mode']}</td></tr>
+                <tr><td style="padding: 6px 0; color: #6b7280;">场馆名称:</td><td style="font-weight: bold; color: #1f2937;">{safe['venue']} - {safe['area']}</td></tr>
+                <tr><td style="padding: 6px 0; color: #6b7280;">预约日期:</td><td style="font-weight: bold; color: #1f2937;">{safe['date']}</td></tr>
+                <tr><td style="padding: 6px 0; color: #6b7280;">预约时段:</td><td style="font-weight: bold; color: #15803d; font-size: 16px;">{safe['time']}</td></tr>
+                <tr><td style="padding: 6px 0; color: #6b7280;">场次 ID:</td><td style="color: #1f2937;">{safe['interval']}</td></tr>
             </table>
             <div style="margin-top: 16px; padding: 10px; background: #ffffff; border-radius: 6px; font-size: 13px; color: #4b5563;">
                 💡 提醒：请准时到场锻炼打卡。如计划变动请在规定时间内退票，避免违约。

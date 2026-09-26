@@ -92,6 +92,7 @@ def test_session_manager_renew_or_fallback():
         api=api,
         phpsessid="expired_sess",
         auth_params={"token": "VALID_TOKEN"},
+        config_path="",
         on_expired=mock_fallback
     )
     with patch.object(mgr, "refresh_session_via_check_login", return_value="http_new_cookie"):

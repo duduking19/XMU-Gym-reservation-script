@@ -39,7 +39,13 @@ AUTH_PY_PATH = os.path.join(PROJECT_ROOT, "xdty_booking", "security", "auth.py")
 
 def ensure_keypair():
     """确保 RSA-2048 密钥对就绪，若不存在则自动生成并同步公钥到 auth.py"""
-    if os.path.exists(PRIV_KEY_PATH) and os.path.exists(PUB_KEY_PATH):
+    private_exists = os.path.exists(PRIV_KEY_PATH)
+    public_exists = os.path.exists(PUB_KEY_PATH)
+    if private_exists != public_exists:
+        raise RuntimeError("签发密钥文件不完整，停止签发以免覆盖现有密钥")
+    if private_exists:
+        if os.name != "nt":
+            os.chmod(PRIV_KEY_PATH, 0o600)
         with open(PRIV_KEY_PATH, "rb") as f:
             privkey = rsa.PrivateKey.load_pkcs1(f.read())
         with open(PUB_KEY_PATH, "rb") as f:
@@ -49,7 +55,7 @@ def ensure_keypair():
     print("[*] 正在生成全新的 2048 位 RSA 商业级密钥对 (需耗时 1-2 秒)...")
     pubkey, privkey = rsa.newkeys(2048)
 
-    with open(PRIV_KEY_PATH, "wb") as f:
+    with os.fdopen(os.open(PRIV_KEY_PATH, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as f:
         f.write(privkey.save_pkcs1(format="PEM"))
     with open(PUB_KEY_PATH, "wb") as f:
         f.write(pubkey.save_pkcs1(format="PEM"))
@@ -106,7 +112,12 @@ def sign_license(
     features: list = None
 ) -> dict:
     """签署授权并生成完整授权包"""
-    privkey, _ = ensure_keypair()
+    privkey, pubkey = ensure_keypair()
+    from xdty_booking.security.auth import get_public_key
+    client_pubkey = get_public_key()
+    if client_pubkey is None or (privkey.n, privkey.e) != (pubkey.n, pubkey.e) or \
+            (privkey.n, privkey.e) != (client_pubkey.n, client_pubkey.e):
+        raise RuntimeError("签发密钥与客户端验签公钥不匹配，请先核对密钥，未生成授权")
     hwid = hwid.strip().upper()
 
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

@@ -13,6 +13,8 @@ xdty_booking/security_source_backup/
 
 # 敏感配置、商业授权与密钥保护 (严禁推送到公开仓库)
 config/config.yaml
+config/*.lock
+cas_qr_login/config.yaml
 license.lic
 data/
 tools/developer_private_key.pem

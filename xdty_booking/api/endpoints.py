@@ -3,11 +3,17 @@ import json
 import logging
 import random
 import time
+import threading
 from typing import Dict, Any, Optional, List, Tuple
 from xdty_booking.api.client import ApiClient
 from xdty_booking.core.models import IntervalResponse
 
 logger = logging.getLogger(__name__)
+
+# ponytail: 单进程全局锁；若需要多进程同时下单，改由服务端幂等键协调。
+_order_lock = threading.Lock()
+_completed_orders = {}
+_uncertain_orders = set()
 
 class XdtyApi:
     """
@@ -76,8 +82,8 @@ class XdtyApi:
             resp = self.client.post("public/index.php/index/Index/checkLogin", data=payload, referer=referer)
             res_json = resp.json()
         except Exception as e:
-            logger.error(f"调用 checkLogin 异常: {e}")
-            return False, "", {"status": -1, "info": str(e)}
+            logger.error("调用 checkLogin 异常: %s", type(e).__name__)
+            return False, "", {"status": -1, "info": "续登请求失败"}
 
         if isinstance(res_json, dict) and res_json.get("status") == 1:
             # 从响应 Cookie 或 Set-Cookie header 中提取新的 PHPSESSID
@@ -101,8 +107,7 @@ class XdtyApi:
                     return True, existing_phpsessid, res_json
                 return False, "", {"status": 0, "info": "checkLogin 成功但未下发 PHPSESSID"}
         else:
-            info = res_json.get("info", "未知错误") if isinstance(res_json, dict) else str(res_json)
-            logger.warning(f"❌ checkLogin 续登失败: {info}")
+            logger.warning("❌ checkLogin 续登失败")
             return False, "", res_json
 
 
@@ -127,7 +132,7 @@ class XdtyApi:
                     logger.info(f"自动获取到当前用户 UID: {self._uid}")
                     return self._uid
         except Exception as e:
-            logger.warning(f"自动获取用户 UID 异常: {e}")
+            logger.warning("自动获取用户 UID 异常: %s", type(e).__name__)
         return self._uid or ""
 
     @staticmethod
@@ -184,7 +189,7 @@ class XdtyApi:
                 )
                 return IntervalResponse.from_dict(retry_resp.json())
             except Exception as e:
-                logger.warning(f"自动激活场馆上下文异常: {e}")
+                logger.warning("自动激活场馆上下文异常: %s", type(e).__name__)
 
         return IntervalResponse.from_dict(res_json)
 
@@ -230,11 +235,8 @@ class XdtyApi:
 
         content_type = resp.headers.get("content-type", "")
         if "application/json" in content_type or resp.content.startswith(b"{"):
-            try:
-                err = resp.json()
-                logger.error(f"获取验证码服务端返回错误: {err}")
-            except Exception:
-                logger.error(f"获取验证码服务端返回非图片数据: {resp.content[:100]}")
+            logger.error("获取验证码服务端返回非图片数据")
+            raise ValueError("验证码响应不是图片")
 
         return resp.content
 
@@ -283,8 +285,30 @@ class XdtyApi:
             "is_vip": is_vip,
             "pay_type": pay_type
         }
-        resp = self.client.post("public/index.php/index/Stadium/addOrder", data=data)
-        return resp.json()
+        account = self._uid or self.client.session.cookies.get("PHPSESSID")
+        key = (str(account), stadium_id, venue_id, date, interval_id) if account else None
+        if not _order_lock.acquire(blocking=False):
+            return {"status": 0, "info": "已有预约请求处理中，请等待结果", "in_progress": True}
+        try:
+            if key in _completed_orders:
+                return {**_completed_orders[key], "duplicate": True}
+            if key in _uncertain_orders:
+                return {"status": 0, "info": "此前提交结果未知，请先在官方预约记录中核对", "outcome_unknown": True}
+            try:
+                resp = self.client.post("public/index.php/index/Stadium/addOrder", data=data)
+                result = resp.json()
+                if resp.status_code >= 500 or not isinstance(result, dict):
+                    raise ValueError("无法确认服务端是否已处理预约")
+            except Exception as e:
+                logger.error("预约提交结果无法确认: %s", type(e).__name__)
+                if key:
+                    _uncertain_orders.add(key)
+                return {"status": 0, "info": "提交结果未知，请先在官方预约记录中核对", "outcome_unknown": True}
+            if key and result.get("status") == 1:
+                _completed_orders[key] = result
+            return result
+        finally:
+            _order_lock.release()
 
     def my_subscribe(self, page: int = 1) -> Dict[str, Any]:
         """查询我的预约记录 (同时作为轻量级心跳探针)"""

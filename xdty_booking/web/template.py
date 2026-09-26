@@ -9,14 +9,17 @@ def _slot_at(value, index: int) -> str:
     slots = value if isinstance(value, list) else ([value] if value else [])
     return slots[index] if index < len(slots) else ""
 
+def _html(value) -> str:
+    return escape(str(value if value is not None else ""), quote=True)
+
 def render_dashboard(data: dict) -> str:
     """生成现代化美观响应式的健身房实时空闲状态与一键预约仪表板页面"""
     # 授权状态检测与处理 (一机一码防护)
     auth_status = data.get("auth_status") or get_auth_status()
     is_licensed = auth_status.get("licensed", False)
     is_dev = auth_status.get("is_dev", False)
-    hwid = auth_status.get("hwid", "")
-    expire_at = auth_status.get("expire_at", "")
+    hwid = _html(auth_status.get("hwid", ""))
+    expire_at = _html(auth_status.get("expire_at", ""))
 
     if is_dev:
         license_badge = '<span class="status-pill" style="background: #f1f5f9; color: #475569; border: 1px solid #cbd5e1; cursor: pointer;" onclick="openLicenseModal()" title="源码开发调试环境 · 免密运行">🛠️ 开发免密版</span>'
@@ -29,27 +32,28 @@ def render_dashboard(data: dict) -> str:
     license_modal_display = "flex" if (not is_licensed and not is_dev) else "none"
 
     groups = data.get("groups", [])
-    stadium_name = data.get("stadium_name", "厦大健身房")
-    area_name = data.get("area_name", "")
-    query_time = data.get("query_time", "")
-    info_msg = data.get("info", "")
+    stadium_name = _html(data.get("stadium_name", "厦大健身房"))
+    area_name = _html(data.get("area_name", ""))
+    query_time = _html(data.get("query_time", ""))
+    info_msg = _html(data.get("info", ""))
     is_session_valid = data.get("session_valid", True)
     has_auth_params = data.get("has_auth_params", False)
-    phpsessid_masked = data.get("phpsessid", "")
+    phpsessid_masked = _html(data.get("phpsessid", ""))
 
     scheduler_status = data.get("scheduler_status", {})
     target_config = data.get("target_config", {})
     scheduler_config = data.get("scheduler_config", {})
     is_sched_running = scheduler_status.get("running", False)
-    current_target_time = scheduler_config.get("target_time", "07:00:00")
+    current_target_time = _html(scheduler_config.get("target_time", "07:00:00"))
     weekly_enabled = scheduler_config.get("weekly_enabled", False)
     weekly_plan = scheduler_config.get("weekly_plan", {})
     date_overrides = scheduler_config.get("date_overrides", {}) or {}
     current_pref_time = target_config.get("preferred_time", "19:30-21:00")
+    safe_pref_time = _html(current_pref_time)
     current_stadium_id = target_config.get("stadium_id", 16)
     current_venue_id = target_config.get("venue_id", 14)
     current_area_id = target_config.get("area_id", 67)
-    current_user_range = target_config.get("user_range", "[67]")
+    current_user_range = _html(target_config.get("user_range", "[67]"))
     xiangan_selected = "selected" if current_stadium_id != 6 else ""
     siming_selected = "selected" if current_stadium_id == 6 else ""
 
@@ -88,7 +92,7 @@ def render_dashboard(data: dict) -> str:
             f'<input id="weeklyDay{day}_{i + 1}" class="form-input" list="weeklyTimeOptions" '
             f'aria-label="{name}第 {i + 1} 优先级预约时段" '
             f'placeholder="{"不预约（留空）" if i == 0 else f"备选 {i + 1}（可选）"}" '
-            f'value="{escape(_slot_at(weekly_plan.get(str(day)), i), quote=True)}">'
+            f'value="{_html(_slot_at(weekly_plan.get(str(day)), i))}">'
             for i in range(MAX_PRIORITY_SLOTS))
         for day, name in enumerate(["周一", "周二", "周三", "周四", "周五", "周六", "周日"], 1)
     )
@@ -96,12 +100,12 @@ def render_dashboard(data: dict) -> str:
     override_row_style = f"display: grid; grid-template-columns: minmax(0, 1fr) repeat({MAX_PRIORITY_SLOTS}, minmax(0, 1fr)) 32px; gap: 8px; margin-bottom: 6px;"
     override_rows_html = "".join(
         f'<div class="override-row" style="{override_row_style}">'
-        f'<input type="date" class="form-input override-date" aria-label="特例入场日期" value="{escape(str(day), quote=True)}">'
+        f'<input type="date" class="form-input override-date" aria-label="特例入场日期" value="{_html(day)}">'
         + "".join(
             f'<input class="form-input override-slot" list="weeklyTimeOptions" '
             f'aria-label="特例第 {i + 1} 优先级时段" '
             f'placeholder="{"16:30-18:00" if i == 0 else f"备选 {i + 1}（可选）"}" '
-            f'value="{escape(_slot_at(slots, i), quote=True)}">'
+            f'value="{_html(_slot_at(slots, i))}">'
             for i in range(MAX_PRIORITY_SLOTS))
         + '<button type="button" class="btn-action" title="删除" onclick="this.parentElement.remove()">✕</button></div>'
         for day, slots in sorted(date_overrides.items())
@@ -163,7 +167,9 @@ def render_dashboard(data: dict) -> str:
                 bar_color = "#10b981" if rem > 10 else "#f59e0b"
                 capacity_display = f"{sel} / {max_c} ({pct}%)"
                 progress_html = f'<div class="progress-fill" style="width: {pct}%; background: {bar_color};"></div>'
-                btn_html = f'<button class="btn-book" onclick="bookSlot(\'{s.get("interval_id")}\', \'{g.get("date")}\', \'{g.get("time_range")}\', this)">⚡ 立刻预约</button>'
+                btn_html = (f'<button class="btn-book" data-interval-id="{_html(s.get("interval_id"))}" '
+                            f'data-date="{_html(g.get("date"))}" data-time-range="{_html(g.get("time_range"))}" '
+                            'onclick="bookSlot(this.dataset.intervalId, this.dataset.date, this.dataset.timeRange, this)">⚡ 立刻预约</button>')
             else:
                 avail_cls = "full"
                 badge_text = "已约满"
@@ -174,8 +180,8 @@ def render_dashboard(data: dict) -> str:
                 btn_html = '<button class="btn-book" disabled title="该场次名额已被全部约满">已约满</button>'
 
             pref_tag = "<span class='pref-tag'>⭐ 设定的目标时段</span>" if g.get("is_preferred") else ""
-            date_str = f"{g.get('date')} {g.get('week_name')}"
-            time_str = g.get('time_range')
+            date_str = f"{_html(g.get('date'))} {_html(g.get('week_name'))}"
+            time_str = _html(g.get('time_range'))
 
             rows_html += f"""
             <tr class="slot-row {avail_cls}">
@@ -1112,12 +1118,12 @@ def render_dashboard(data: dict) -> str:
                     </div>
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 13px; color: #1e293b;">
                         <div><strong>📍 预约地点:</strong> <span id="infoStadiumName">{stadium_name}</span></div>
-                        <div><strong>🕒 目标时段:</strong> <span id="infoPrefTime">{current_pref_time}</span></div>
+                        <div><strong>🕒 目标时段:</strong> <span id="infoPrefTime">{safe_pref_time}</span></div>
                         <div><strong>📅 入场日期:</strong> <span id="infoVisitDate">—</span></div>
                         <div><strong>⏰ 开抢时刻:</strong> <span id="infoRunAt">—</span></div>
                     </div>
                     <div id="infoStatusDesc" style="font-size: 12px; color: #15803d; margin-top: 10px; padding-top: 8px; border-top: 1px dashed #bbf7d0;">
-                        {scheduler_status.get('status_text', '将在早 07:00:00 准点为您极速提交预约')}
+                        {_html(scheduler_status.get('status_text', '将在早 07:00:00 准点为您极速提交预约'))}
                     </div>
                 </div>
 
@@ -1143,11 +1149,11 @@ def render_dashboard(data: dict) -> str:
                             </div>
                         </div>
                     </div>
-                    <input type="hidden" id="schedStadiumId" value="{current_stadium_id}">
+                    <input type="hidden" id="schedStadiumId" value="{_html(current_stadium_id)}">
                     <input type="hidden" id="schedStadiumName" value="{stadium_name}">
                     <input type="hidden" id="schedAreaName" value="{area_name}">
-                    <input type="hidden" id="schedVenueId" value="{current_venue_id}">
-                    <input type="hidden" id="schedAreaId" value="{current_area_id}">
+                    <input type="hidden" id="schedVenueId" value="{_html(current_venue_id)}">
+                    <input type="hidden" id="schedAreaId" value="{_html(current_area_id)}">
                     <input type="hidden" id="schedUserRange" value="{current_user_range}">
                 </div>
 
@@ -1180,13 +1186,13 @@ def render_dashboard(data: dict) -> str:
                         {sched_time_chips_html}
                     </div>
                     <div style="margin-top: 8px;">
-                        <input type="text" id="schedPrefTimeInput" class="form-input" placeholder="例如: 19:30-21:00" value="{current_pref_time}">
+                        <input type="text" id="schedPrefTimeInput" class="form-input" placeholder="例如: 19:30-21:00" value="{safe_pref_time}">
                     </div>
                 </div>
 
                 <!-- 隐藏的固定抢票时刻与目标日期 (默认早7点，次日场地，不向用户暴露) -->
                 <input type="hidden" id="schedTargetTimeInput" value="{current_target_time}">
-                <input type="hidden" id="schedTargetDateOffset" value="{target_config.get('target_date_offset', 1)}">
+                <input type="hidden" id="schedTargetDateOffset" value="{_html(target_config.get('target_date_offset', 1))}">
 
                 <!-- 表单项 3: 辅助选项 -->
                 <div style="padding: 12px; background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0; margin-top: 6px;">
@@ -1250,16 +1256,16 @@ def render_dashboard(data: dict) -> str:
                             <span class="pulse-dot" style="background: #2563eb;"></span>
                             <span style="font-weight: 700; font-size: 14px; color: #1d4ed8;">🟢 正在高频捡漏监听中</span>
                         </div>
-                        <span id="snipeInfoPollCount" style="font-size: 12px; color: #1d4ed8; font-weight: 600; background: #dbeafe; padding: 2px 8px; border-radius: 10px;">已探测 {snipe_status.get('poll_count', 0)} 次</span>
+                        <span id="snipeInfoPollCount" style="font-size: 12px; color: #1d4ed8; font-weight: 600; background: #dbeafe; padding: 2px 8px; border-radius: 10px;">已探测 {_html(snipe_status.get('poll_count', 0))} 次</span>
                     </div>
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 13px; color: #1e293b;">
-                        <div><strong>📍 目标场馆:</strong> <span id="snipeInfoStadium">{snipe_status.get('stadium_name') or stadium_name}</span></div>
-                        <div><strong>📅 目标日期:</strong> <span id="snipeInfoDate">{snipe_status.get('target_date') or tomorrow_str}</span></div>
-                        <div><strong>🕒 目标时段:</strong> <span id="snipeInfoTime">{snipe_status.get('preferred_time') or current_pref_time}</span></div>
+                        <div><strong>📍 目标场馆:</strong> <span id="snipeInfoStadium">{_html(snipe_status.get('stadium_name')) if snipe_status.get('stadium_name') else stadium_name}</span></div>
+                        <div><strong>📅 目标日期:</strong> <span id="snipeInfoDate">{_html(snipe_status.get('target_date') or tomorrow_str)}</span></div>
+                        <div><strong>🕒 目标时段:</strong> <span id="snipeInfoTime">{_html(snipe_status.get('preferred_time')) if snipe_status.get('preferred_time') else safe_pref_time}</span></div>
                         <div><strong>⚡ 运行模式:</strong> <span>毫秒并发秒抢</span></div>
                     </div>
                     <div id="snipeInfoStatusDesc" style="font-size: 12px; color: #1d4ed8; margin-top: 10px; padding-top: 8px; border-top: 1px dashed #bfdbfe;">
-                        {snipe_status.get('status_text', '正在监听目标场次余量...')}
+                        {_html(snipe_status.get('status_text', '正在监听目标场次余量...'))}
                     </div>
                 </div>
 
@@ -1288,7 +1294,7 @@ def render_dashboard(data: dict) -> str:
                         {snipe_time_chips_html}
                     </div>
                     <div style="margin-top: 8px;">
-                        <input type="text" id="snipePrefTimeInput" class="form-input" placeholder="例如: 19:30-21:00" value="{current_pref_time}">
+                        <input type="text" id="snipePrefTimeInput" class="form-input" placeholder="例如: 19:30-21:00" value="{safe_pref_time}">
                     </div>
                 </div>
 
@@ -1555,7 +1561,7 @@ def render_dashboard(data: dict) -> str:
             if (qrStatus) qrStatus.innerText = "正在获取企业微信登录二维码...";
 
             try {{
-                const res = await fetch("/api/qr");
+                const res = await fetch("/api/qr", {{method: "POST", headers: {{"Content-Type": "application/json"}}}});
                 const data = await res.json();
                 if (data.success) {{
                     qrImg.src = data.qr_image;
@@ -1577,7 +1583,7 @@ def render_dashboard(data: dict) -> str:
                 const qrStatus = document.getElementById("inlineQrStatus");
                 const refBtn = document.getElementById("inlineRefreshBtn");
                 try {{
-                    const res = await fetch("/api/qr_status");
+                    const res = await fetch("/api/qr_status", {{method: "POST", headers: {{"Content-Type": "application/json"}}}});
                     const data = await res.json();
                     if (data.code === "0") {{
                         if (qrStatus) qrStatus.innerText = "等待手机企业微信扫码...";
@@ -1921,7 +1927,7 @@ def render_dashboard(data: dict) -> str:
             }}
             try {{
                 const res = await fetch("/api/scheduler/stop", {{
-                    method: "POST"
+                    method: "POST", headers: {{"Content-Type": "application/json"}}
                 }});
                 const data = await res.json();
                 if (data.success) {{
@@ -2148,7 +2154,7 @@ def render_dashboard(data: dict) -> str:
             }}
             try {{
                 const res = await fetch("/api/snipe/stop", {{
-                    method: "POST"
+                    method: "POST", headers: {{"Content-Type": "application/json"}}
                 }});
                 const data = await res.json();
                 if (data.success) {{
@@ -2173,7 +2179,7 @@ def render_dashboard(data: dict) -> str:
         async function reloginSession() {{
             showToast("⏳ 正在通过 checkLogin 执行纯 HTTP 自动续登 (无需打开微信)...", true);
             try {{
-                const r = await fetch('/api/relogin');
+                const r = await fetch('/api/relogin', {{method: 'POST', headers: {{'Content-Type': 'application/json'}}}});
                 const data = await r.json();
                 if (data.success) {{
                     showToast(data.info || "🎉 纯 HTTP 自动续登成功！最新 Session 已生效", true);
@@ -2218,7 +2224,7 @@ def render_dashboard(data: dict) -> str:
             if (!await customConfirm(tipMsg, "手动启动小程序登录说明", {{ confirmText: "立即启动小程序", cancelText: "我再看看" }})) return;
             showToast("⏳ 正在唤起小程序，请在窗口中登录并点击【场馆预约】...", true);
             try {{
-                const r = await fetch('/api/harvest');
+                const r = await fetch('/api/harvest', {{method: 'POST', headers: {{'Content-Type': 'application/json'}}}});
                 const data = await r.json();
                 if (data.success) {{
                     await customAlert("登录凭证获取成功！新会话已生效，页面即将刷新。", "success", "🎉 登录成功");
@@ -2245,30 +2251,16 @@ def render_dashboard(data: dict) -> str:
             }}
 
             try {{
-                const r = await fetch(`/api/book?interval_id=${{intervalId}}&date=${{date}}&time=${{encodeURIComponent(timeRange)}}`);
+                const r = await fetch('/api/book', {{
+                    method: 'POST',
+                    headers: {{'Content-Type': 'application/json'}},
+                    body: JSON.stringify({{interval_id: intervalId, date: date, time: timeRange}})
+                }});
                 const res = await r.json();
                 if (res.success) {{
                     await customAlert(res.info || '场地名额已锁定！请按时前往锻炼。', "success", "🎉 恭喜您预约成功！");
                     location.reload();
                 }} else {{
-                    // 如果提示凭证失效，先尝试纯 HTTP 自动续期并重试
-                    if (res.need_harvest || (res.info && (res.info.includes("登录") || res.info.includes("过期") || res.info.includes("失效")))) {{
-                        showToast("⚠️ 凭证失效，正在尝试纯 HTTP 自动续期并重新下单...", true);
-                        try {{
-                            const relR = await fetch('/api/relogin');
-                            const rel = await relR.json();
-                            if (rel.success) {{
-                                showToast("🎉 续期成功，正在重新提交预约...", true);
-                                setTimeout(() => bookSlot(intervalId, date, timeRange, originBtn), 600);
-                                return;
-                            }} else {{
-                                if (await customConfirm("快速续登未成功，是否启动小程序进行手动登录？", "凭证失效提醒", {{ confirmText: "启动小程序", cancelText: "取消" }})) {{
-                                    harvestSession();
-                                    return;
-                                }}
-                            }}
-                        }} catch(e) {{}}
-                    }}
                     if (originBtn) {{
                         originBtn.disabled = false;
                         originBtn.innerText = originText;
@@ -2474,7 +2466,7 @@ def render_dashboard(data: dict) -> str:
                 </label>
                 <div style="display: flex; gap: 8px;">
                     <input type="text" id="hwidDisplayInput" value="{hwid}" readonly class="form-input" style="font-family: monospace; font-size: 14px; font-weight: 700; text-align: center; background: #f8fafc; letter-spacing: 1px; color: #1e293b;">
-                    <button type="button" class="btn-action btn-primary" onclick="copyHwidCode('{hwid}')" style="white-space: nowrap; font-weight: 600; padding: 8px 14px;">
+                    <button type="button" class="btn-action btn-primary" onclick="copyHwidCode(document.getElementById('hwidDisplayInput').value)" style="white-space: nowrap; font-weight: 600; padding: 8px 14px;">
                         📋 一键复制
                     </button>
                 </div>
@@ -2514,7 +2506,7 @@ def render_qr_login_page(is_already_logged_in: bool = False, phpsessid_masked: s
     if is_already_logged_in:
         already_in_banner = f"""
         <div style="background: #ecfdf5; border: 1px solid #a7f3d0; color: #065f46; padding: 10px 18px; border-radius: 10px; margin-bottom: 20px; font-size: 13px; text-align: center;">
-            ✨ 当前系统已存活有效登录态 <strong>({phpsessid_masked})</strong>，您可以直接 
+            ✨ 当前系统已存活有效登录态 <strong>({_html(phpsessid_masked)})</strong>，您可以直接
             <a href="/" style="color: #047857; font-weight: 700; text-decoration: underline; margin-left: 4px;">进入预约大厅 →</a>
         </div>
         """
@@ -2818,7 +2810,7 @@ def render_qr_login_page(is_already_logged_in: bool = False, phpsessid_masked: s
             updateStatus("scanning", "正在向统一认证中心申请 UUID...");
 
             try {{
-                const res = await fetch("/api/qr");
+                const res = await fetch("/api/qr", {{method: "POST", headers: {{"Content-Type": "application/json"}}}});
                 const data = await res.json();
                 if (data.success) {{
                     document.getElementById("qrImg").src = data.qr_image;
@@ -2848,7 +2840,7 @@ def render_qr_login_page(is_already_logged_in: bool = False, phpsessid_masked: s
                     return;
                 }}
                 try {{
-                    const res = await fetch("/api/qr_status");
+                    const res = await fetch("/api/qr_status", {{method: "POST", headers: {{"Content-Type": "application/json"}}}});
                     const data = await res.json();
 
                     if (data.code === "0") {{

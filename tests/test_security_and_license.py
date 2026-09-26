@@ -13,6 +13,7 @@ import os
 import sys
 import json
 import pytest
+import rsa
 from datetime import datetime, timedelta
 
 from xdty_booking.security.hwid import get_hwid, get_hardware_info
@@ -24,7 +25,20 @@ from xdty_booking.security.auth import (
     verify_license_object,
     parse_license_data
 )
-from tools.keygen import sign_license, format_license_code, ensure_keypair
+from tools.keygen import sign_license, format_license_code, ensure_keypair as ensure_real_keypair
+
+
+@pytest.fixture(scope="module")
+def test_keypair():
+    return rsa.newkeys(2048)
+
+
+@pytest.fixture(autouse=True)
+def isolated_license_files(monkeypatch, tmp_path, test_keypair):
+    public_key, private_key = test_keypair
+    monkeypatch.setattr("tools.keygen.ensure_keypair", lambda: (private_key, public_key))
+    monkeypatch.setattr("xdty_booking.security.auth.get_public_key", lambda: public_key)
+    monkeypatch.setattr("xdty_booking.security.auth.get_app_dir", lambda: str(tmp_path))
 
 
 def test_hwid_generation():
@@ -70,6 +84,32 @@ def test_rsa_signature_verification_success():
     assert "授权验证通过" in msg
     assert payload["hwid"] == current_hwid
     assert payload["remark"] == "测试买家张三"
+
+
+def test_signing_stops_if_client_public_key_does_not_match(test_keypair, monkeypatch):
+    public_key, _ = test_keypair
+    other_public_key, _ = rsa.newkeys(2048)
+    assert public_key != other_public_key
+    monkeypatch.setattr("xdty_booking.security.auth.get_public_key", lambda: other_public_key)
+    with pytest.raises(RuntimeError, match="公钥不匹配"):
+        sign_license(hwid=get_hwid(), days=1)
+
+
+def test_keygen_preserves_partial_key_and_protects_new_private_key(tmp_path, monkeypatch):
+    private_path = tmp_path / "private.pem"
+    public_path = tmp_path / "public.pem"
+    monkeypatch.setattr("tools.keygen.PRIV_KEY_PATH", str(private_path))
+    monkeypatch.setattr("tools.keygen.PUB_KEY_PATH", str(public_path))
+    monkeypatch.setattr("tools.keygen._sync_public_key_to_auth", lambda pem: None)
+    private_path.write_text("existing private key")
+    with pytest.raises(RuntimeError, match="不完整"):
+        ensure_real_keypair()
+    assert private_path.read_text() == "existing private key"
+
+    private_path.unlink()
+    ensure_real_keypair()
+    if os.name != "nt":
+        assert private_path.stat().st_mode & 0o077 == 0
 
 
 def test_tamper_signature_rejection():
@@ -127,12 +167,7 @@ def test_activate_license_and_status_refresh(tmp_path):
     """测试激活函数及其在模拟打包环境下的生效表现"""
     os.environ["FORCE_LICENSE_CHECK"] = "1"
     try:
-        # 未激活状态检测
-        # 确保无残留 license.lic
-        lic_file = os.path.join(os.getcwd(), "license.lic")
-        if os.path.exists(lic_file):
-            os.remove(lic_file)
-
+        # 测试夹具把授权文件限定在临时目录。
         unauth_status = check_license(force_refresh=True)
         assert unauth_status.is_licensed is False
         assert unauth_status.is_dev is False
@@ -154,9 +189,3 @@ def test_activate_license_and_status_refresh(tmp_path):
 
     finally:
         os.environ.pop("FORCE_LICENSE_CHECK", None)
-        lic_file = os.path.join(os.getcwd(), "license.lic")
-        if os.path.exists(lic_file):
-            try:
-                os.remove(lic_file)
-            except Exception:
-                pass

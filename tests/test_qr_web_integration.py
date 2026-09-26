@@ -96,7 +96,7 @@ class TestQrWebIntegration(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertEqual(body["code"], "1")
         self.assertTrue(body["logged_in"])
-        self.assertEqual(body["data"]["phpsessid"], "32charslongphpsessid123456789012")
+        self.assertIsNone(body["data"])
         mock_save_php.assert_called_once()
         mock_save_auth.assert_called_once()
 
@@ -128,7 +128,7 @@ class TestPasswordLoginHandler(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertTrue(body["success"])
         self.assertTrue(body["logged_in"])
-        self.assertEqual(body["data"]["phpsessid"], "sess_new")
+        self.assertNotIn("data", body)
 
     @patch("xdty_booking.web.server.save_cas_credentials")
     @patch("xdty_booking.web.server.save_auth_params")

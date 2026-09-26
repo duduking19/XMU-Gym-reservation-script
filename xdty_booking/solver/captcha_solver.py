@@ -68,13 +68,13 @@ class CaptchaSolver:
 
         if self._ocr is None:
             self._save_image(image_bytes, f"nomodel_{self.mock_result}")
-            logger.warning(f"识别模型未加载，返回默认占位值: '{self.mock_result}'")
-            return self.mock_result
+            logger.warning("识别模型未加载，无法识别验证码")
+            return ""
 
         if not image_bytes or image_bytes.startswith(b"<!DOCTYPE") or image_bytes.startswith(b"<html") or image_bytes.startswith(b"{"):
             self._save_image(image_bytes, "invalid")
-            logger.error(f"传入验证码识别的数据不是图片格式 (长度 {len(image_bytes) if image_bytes else 0} 字节): {image_bytes[:80] if image_bytes else b''}")
-            return self.mock_result
+            logger.error("传入验证码识别的数据不是图片格式")
+            return ""
 
         try:
             res = self._ocr.classification(image_bytes)
@@ -85,5 +85,5 @@ class CaptchaSolver:
             return clean_res
         except Exception as e:
             self._save_image(image_bytes, "error")
-            logger.error(f"验证码识别发生异常: {e}")
-            return self.mock_result
+            logger.error("验证码识别发生异常: %s", type(e).__name__)
+            return ""

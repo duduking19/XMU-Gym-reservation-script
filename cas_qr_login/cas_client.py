@@ -78,9 +78,9 @@ class CasQrLoginClient:
         try:
             init_resp = self.session.get(self.DEFAULT_SERVICE, allow_redirects=False, timeout=8)
             if "Location" in init_resp.headers:
-                logger.info(f"体育馆初始化重定向至: {init_resp.headers['Location']}")
+                logger.info("体育馆初始化完成重定向")
         except Exception as e:
-            logger.warning(f"访问体育馆初始接口异常 (继续尝试直连 CAS): {e}")
+            logger.warning("访问体育馆初始接口异常 (继续尝试直连 CAS): %s", type(e).__name__)
 
         # 2. 构造规范 service 参数，加载 CAS 登录页面
         self.service_url = self.DEFAULT_SERVICE
@@ -101,7 +101,7 @@ class CasQrLoginClient:
         else:
             self.service_param = self.service_url
 
-        logger.info(f"获取 CAS 登录上下文完成: execution={self.execution}, service={self.service_param}")
+        logger.info("获取 CAS 登录上下文完成")
 
         # 3. 请求 /qrCode/getToken 获取唯一 UUID
         token_url = f"{self.CAS_BASE}/qrCode/getToken?ts={int(time.time() * 1000)}"
@@ -111,7 +111,7 @@ class CasQrLoginClient:
             timeout=8
         )
         self.uuid = token_resp.text.strip()
-        logger.info(f"成功分配唯一二维码会话 UUID: {self.uuid}")
+        logger.info("成功分配二维码会话 UUID")
 
         # 4. 下载官方二维码图片
         code_img_url = f"{self.CAS_BASE}/qrCode/getCode?uuid={self.uuid}"
@@ -160,8 +160,8 @@ class CasQrLoginClient:
             }
             return code, desc_map.get(code, f"未知状态码: {code}")
         except Exception as e:
-            logger.warning(f"轮询状态异常: {e}")
-            return "-1", f"网络轮询异常: {e}"
+            logger.warning("轮询状态异常: %s", type(e).__name__)
+            return "-1", "网络轮询异常"
 
     def exchange_and_login(self) -> Dict[str, Any]:
         """
@@ -220,7 +220,7 @@ class CasQrLoginClient:
             )
             need_captcha = bool(r.json().get("isNeed"))
         except Exception as e:
-            logger.warning(f"checkNeedCaptcha 异常，按不需要验证码处理: {e}")
+            raise RuntimeError("无法确认 CAS 是否需要验证码") from e
 
         for attempt in range(1, max_captcha_retry + 1):
             captcha = ""
@@ -230,7 +230,9 @@ class CasQrLoginClient:
                     headers={"Referer": login_url}, timeout=8
                 ).content
                 captcha = solver.solve(img)
-                logger.info(f"CAS 图形验证码识别结果: {captcha} (第 {attempt} 次)")
+                if not captcha:
+                    raise RuntimeError("CAS 图形验证码识别失败")
+                logger.info("CAS 图形验证码识别完成 (第 %s 次)", attempt)
 
             payload = {
                 "username": username,
@@ -273,7 +275,7 @@ class CasQrLoginClient:
 
         while curr_url and max_hops > 0:
             max_hops -= 1
-            logger.info(f"重定向跳步 [{12 - max_hops}]: {curr_url}")
+            logger.info("CAS 重定向跳步 [%s]", 12 - max_hops)
 
             # 检查 URL 是否命中了带有凭证的 landing page
             if "xdLogin.html" in curr_url or "token=" in curr_url:
@@ -291,7 +293,7 @@ class CasQrLoginClient:
                 break
 
         if not captured_auth_params:
-            raise RuntimeError(f"未能从重定向链路中捕获到 auth_params，最终停留在: {curr_url}")
+            raise RuntimeError("未能从重定向链路中捕获到 auth_params")
 
         self.auth_params = captured_auth_params
 
@@ -300,12 +302,14 @@ class CasQrLoginClient:
         valid_sessid = self._do_check_login(captured_auth_params)
         if valid_sessid:
             self.phpsessid = valid_sessid
-            logger.info(f"🎉 成功获取并激活正式 32 位 PHPSESSID: {self.phpsessid}")
+            logger.info("🎉 成功获取并激活正式 PHPSESSID: %s***", self.phpsessid[:8])
         else:
             raise RuntimeError("调用 checkLogin 换取正式 32 位 PHPSESSID 失败，服务端未下发合法会话")
 
         # 4. 执行实机探活与用户信息查询
         self.user_info = self._fetch_user_profile()
+        if self.user_info.get("status") != "有效 (Alive)":
+            raise RuntimeError("登录后会话验证失败")
 
         return {
             "success": True,
@@ -348,7 +352,7 @@ class CasQrLoginClient:
                 timeout=8
             )
             res_json = r.json()
-            logger.info(f"checkLogin 响应结果: status={res_json.get('status')}, info={res_json.get('info')}")
+            logger.info("checkLogin 响应状态: %s", res_json.get("status"))
 
             # 从响应中提取全新下发的真实 32 位 PHPSESSID
             new_sessid = r.cookies.get("PHPSESSID")
@@ -366,10 +370,10 @@ class CasQrLoginClient:
             if res_json.get("status") == 1 and new_sessid:
                 return new_sessid
 
-            logger.warning(f"checkLogin 校验未通过或未下发有效会话: {res_json}")
+            logger.warning("checkLogin 校验未通过或未下发有效会话")
             return None
         except Exception as e:
-            logger.error(f"调用 checkLogin 异常: {e}")
+            logger.error("调用 checkLogin 异常: %s", type(e).__name__)
             return None
 
     def _fetch_user_profile(self) -> Dict[str, Any]:

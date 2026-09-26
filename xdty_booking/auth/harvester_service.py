@@ -51,7 +51,7 @@ class HarvestService:
                 mgr = SessionManager(api, phpsessid=candidate)
                 return mgr.check_alive()
             except Exception as e:
-                logger.debug(f"验证 candidate token 异常: {e}")
+                logger.debug("验证 candidate token 异常: %s", type(e).__name__)
                 return False
 
         def on_captured_auth_params(params: dict):
@@ -61,7 +61,7 @@ class HarvestService:
                 self.config.auth.auth_params.update(params)
                 logger.info("💾 已将嗅探到的新 auth_params 实时持久化至配置文件")
             except Exception as e:
-                logger.warning(f"持久化嗅探到的 auth_params 异常: {e}")
+                logger.warning("持久化嗅探到的 auth_params 异常: %s", type(e).__name__)
 
         proxy = SnifferProxy(
             host="127.0.0.1",
@@ -72,7 +72,7 @@ class HarvestService:
         try:
             proxy.start()
         except Exception as e:
-            logger.error(f"启动本地嗅探代理失败: {e}")
+            logger.error("启动本地嗅探代理失败: %s", type(e).__name__)
             return None
 
         captured_token = None
@@ -102,7 +102,7 @@ class HarvestService:
                 captured_token = proxy.wait_for_token(timeout=timeout)
 
         except Exception as e:
-            logger.error(f"嗅探捕获流程发生异常: {e}")
+            logger.error("嗅探捕获流程发生异常: %s", type(e).__name__)
         finally:
             # 6. 收尾工作：无论成功失败，必须确保还原 Windows 代理并关闭代理服务
             proxy.stop()
@@ -111,7 +111,7 @@ class HarvestService:
 
         # 7. 处理截获成果并持久化
         if captured_token:
-            logger.info(f"✨ 凭证捕获成功: {captured_token}")
+            logger.info("✨ 凭证捕获成功: %s***", captured_token[:8])
             self.config.auth.phpsessid = captured_token
             # 回写配置文件
             saved = save_phpsessid(self.config_path, captured_token)

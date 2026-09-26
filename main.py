@@ -91,7 +91,7 @@ def build_cli_parser():
         default=8080,
         help="Web 服务监听端口 (默认: 8080)"
     )
-    parser.add_argument("--host", default="0.0.0.0", help="Web 监听地址，服务器建议使用 127.0.0.1")
+    parser.add_argument("--host", default="127.0.0.1", help="Web 监听地址（仅支持本机回环地址）")
     parser.add_argument(
         "--no-fallback",
         action="store_true",
@@ -175,12 +175,12 @@ def main():
             example_path = "config/config.example.yaml"
         if os.path.exists(example_path):
             if os.path.basename(config_path) == "config.yaml":
-                import shutil
                 try:
-                    shutil.copy(example_path, config_path)
+                    from xdty_booking.config import ensure_config_file
+                    ensure_config_file(config_path, example_path)
                     logger.info(f"💡 首次运行检测：已自动为您生成默认配置文件 '{config_path}'！")
                 except Exception as e:
-                    logger.warning(f"自动生成配置文件失败: {e}，将回退读取示例配置")
+                    logger.warning("自动生成配置文件失败: %s，将回退读取示例配置", type(e).__name__)
                     config_path = example_path
             else:
                 logger.warning(f"未找到 '{config_path}'，将回退读取示例配置 '{example_path}'")
@@ -249,7 +249,7 @@ def main():
         if new_token:
             client.set_session_token(new_token)
             cfg.auth.phpsessid = new_token
-            logger.info(f"🎉 纯 HTTP 自动续登成功！最新 PHPSESSID: {new_token}")
+            logger.info("🎉 纯 HTTP 自动续登成功！最新 PHPSESSID: %s***", new_token[:8])
         else:
             logger.error("❌ checkLogin 续登失败，请检查 auth_params 配置或使用 harvest 重新截获。")
 
@@ -260,7 +260,7 @@ def main():
             session_mgr.update_token(token)
             client.set_session_token(token)
             cfg.auth.phpsessid = token
-            logger.info(f"✅ [成功] 自动截获并更新 PHPSESSID: {token}")
+            logger.info("✅ [成功] 自动截获并更新 PHPSESSID: %s***", token[:8])
         else:
             logger.error("❌ [失败] 自动嗅探未能成功截获凭证")
 
@@ -279,7 +279,7 @@ def main():
             code = solver.solve(img_bytes)
             logger.info(f"验证码识别完成: 【{code}】")
         except Exception as e:
-            logger.error(f"验证码拉取或识别失败: {e}")
+            logger.error("验证码拉取或识别失败: %s", type(e).__name__)
 
     elif args.action == "launch-wechat":
         logger.info("测试唤醒 Windows PC 微信小程序...")
@@ -343,7 +343,7 @@ def main():
                     print(f"  时段: {g.time_range:<13} | {badge} | {rem_text}{pref_mark}")
             print("\n" + "=" * 76 + "\n")
         except Exception as e:
-            logger.error(f"查询场馆空闲状态失败: {e}")
+            logger.error("查询场馆空闲状态失败: %s", type(e).__name__)
 
     elif args.action == "web":
         run_server(port=args.port, config_path=config_path, host=args.host)

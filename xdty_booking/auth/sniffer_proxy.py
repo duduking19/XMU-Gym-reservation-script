@@ -87,7 +87,7 @@ class SnifferProxy:
         logger.info(f"正在监听微信小程序登录请求，等待 PHPSESSID 截获 (超时: {timeout} 秒)...")
         signaled = self.captured_event.wait(timeout=timeout)
         if signaled:
-            logger.info(f"🎉 成功截获到最新 PHPSESSID: {self.captured_token}")
+            logger.info("🎉 成功截获到最新 PHPSESSID: %s***", self.captured_token[:8])
             return self.captured_token
         else:
             logger.warning(f"在 {timeout} 秒内未截获到微信小程序的登录 Token")
@@ -124,7 +124,7 @@ class SnifferProxy:
                 return
 
             first_line = initial_data.split(b"\r\n")[0].decode("latin1", errors="ignore")
-            logger.info(f"===> 收到客户端报文请求行: {first_line}")
+            logger.debug("收到代理客户端请求")
             parts = first_line.split(" ")
             if len(parts) < 2:
                 client_sock.close()
@@ -139,7 +139,7 @@ class SnifferProxy:
                 # 普通 HTTP 请求
                 self._handle_plain_http(client_sock, method, target, initial_data)
         except Exception as e:
-            logger.warning(f"===> 代理客户端处理异常: {e}")
+            logger.warning("===> 代理客户端处理异常: %s", type(e).__name__)
             try:
                 client_sock.close()
             except Exception:
@@ -173,7 +173,7 @@ class SnifferProxy:
             upstream_sock = socket.create_connection((host, port), timeout=8.0)
             client_sock.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
         except Exception as e:
-            logger.debug(f"透传连接 {host}:{port} 失败: {e}")
+            logger.debug("透传连接失败: %s", type(e).__name__)
             client_sock.sendall(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
             client_sock.close()
             return
@@ -186,7 +186,7 @@ class SnifferProxy:
         try:
             client_sock.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
         except Exception as e:
-            logger.warning(f"向客户端发送 200 Connection Established 失败: {e}")
+            logger.warning("向客户端发送 200 Connection Established 失败: %s", type(e).__name__)
             client_sock.close()
             return
 
@@ -219,8 +219,7 @@ class SnifferProxy:
                     break
 
                 req_str = request_data.decode("latin1", errors="ignore")
-                first_line = req_str.splitlines()[0] if req_str else ""
-                logger.info(f"🎯 [捕获目标请求] {first_line}")
+                logger.info("🎯 捕获到目标请求")
                 self._inspect_and_extract_auth_params(request_data)
                 self._inspect_and_extract_cookie(request_data, source="客户端请求")
 
@@ -230,7 +229,7 @@ class SnifferProxy:
                     # 5. 接收服务器真实响应
                     response_data = self._read_http_message(ssl_upstream)
                 except Exception as e:
-                    logger.warning(f"与上游真实服务器通信异常: {e}")
+                    logger.warning("与上游真实服务器通信异常: %s", type(e).__name__)
                     break
 
                 if not response_data:
@@ -241,7 +240,7 @@ class SnifferProxy:
                 try:
                     ssl_client.sendall(response_data)
                 except Exception as e:
-                    logger.warning(f"向客户端发送响应异常: {e}")
+                    logger.warning("向客户端发送响应异常: %s", type(e).__name__)
                     break
 
                 # 检查连接关闭指令
@@ -251,7 +250,7 @@ class SnifferProxy:
                     break
 
         except Exception as e:
-            logger.error(f"===> MITM 解密流程异常: {e}", exc_info=True)
+            logger.error("===> MITM 解密流程异常: %s", type(e).__name__)
         finally:
             if ssl_client:
                 try:
@@ -291,7 +290,7 @@ class SnifferProxy:
                 client_sock.sendall(response_data)
             upstream_sock.close()
         except Exception as e:
-            logger.debug(f"明文 HTTP 转发异常: {e}")
+            logger.debug("明文 HTTP 转发异常: %s", type(e).__name__)
         finally:
             client_sock.close()
 
@@ -374,17 +373,14 @@ class SnifferProxy:
 
                 if "token" in extracted and len(extracted["token"]) >= 16:
                     self.captured_auth_params = extracted
-                    logger.info(
-                        f"🎯 [命中长效凭据] 成功嗅探到 checkLogin 续登参数: "
-                        f"token={extracted['token'][:8]}***, uid={extracted.get('uid', '')}"
-                    )
+                    logger.info("🎯 [命中长效凭据] 成功嗅探到 checkLogin 续登参数")
                     if self.on_auth_params_captured:
                         try:
                             self.on_auth_params_captured(extracted)
                         except Exception as e:
-                            logger.warning(f"触发 on_auth_params_captured 异常: {e}")
+                            logger.warning("触发 on_auth_params_captured 异常: %s", type(e).__name__)
         except Exception as e:
-            logger.debug(f"解析 auth_params 异常: {e}")
+            logger.debug("解析 auth_params 异常: %s", type(e).__name__)
 
     def _inspect_and_extract_cookie(self, data: bytes, source: str = "响应"):
         """检查报文（请求头或响应头）中是否存在 PHPSESSID"""
@@ -400,7 +396,7 @@ class SnifferProxy:
                     try:
                         is_valid = self.token_validator(token)
                     except Exception as e:
-                        logger.debug(f"验证候选 Token 异常: {e}")
+                        logger.debug("验证候选 Token 异常: %s", type(e).__name__)
 
                     if not is_valid:
                         logger.info(f"ℹ️ 嗅探到候选 PHPSESSID: {token[:8]}*** ({source})，但实机探测尚未登录就绪（通常是刚启动时的空白握手会话），继续等待...")
@@ -410,9 +406,9 @@ class SnifferProxy:
 
                 self.captured_token = token
                 self.captured_event.set()
-                logger.info(f"🎯 [命中并确认] 成功从{source}中嗅探到有效凭证: PHPSESSID={token}")
+                logger.info("🎯 [命中并确认] 成功从%s中嗅探到有效凭证: PHPSESSID=%s***", source, token[:8])
         except Exception as e:
-            logger.debug(f"解析 {source} Cookie 异常: {e}")
+            logger.debug("解析 %s Cookie 异常: %s", source, type(e).__name__)
 
     def _pipe_sockets(self, s1: socket.socket, s2: socket.socket):
         """在两个套接字之间建立双向透明管道"""

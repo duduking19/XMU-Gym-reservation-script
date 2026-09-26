@@ -92,7 +92,10 @@ class IntervalResponse:
         if isinstance(raw_dates, list):
             for d in raw_dates:
                 if isinstance(d, dict):
-                    dates.append(DateItem(**d))
+                    dates.append(DateItem(
+                        date_int=str(d.get("date_int") or ""), date=str(d.get("date") or ""),
+                        week_int=str(d.get("week_int") or ""), week=str(d.get("week") or "")
+                    ))
 
         groups = []
         raw_groups = body.get("time_slot_list", [])
@@ -106,31 +109,38 @@ class IntervalResponse:
                     for s in raw_slots:
                         if not isinstance(s, dict):
                             continue
-                        slots.append(SlotItem(
-                            column_id=str(s.get("column_id", "")),
-                            date=s.get("date", ""),
-                            area_name=s.get("area_name", ""),
-                            interval_id=str(s.get("interval_id", "")),
-                            price=float(s.get("price", 0) or 0),
-                            selected=int(s.get("selected", 0) or 0),
-                            select_type=int(s["select_type"]) if s.get("select_type") not in (None, "") else 1,
-                            max_count=int(s.get("max_count", 0) or 0),
-                            status=s.get("status", ""),
-                            is_lock=int(s.get("is_lock", 0) or 0),
-                            lock_reason=s.get("lock_reason", "")
-                        ))
+                        try:
+                            slots.append(SlotItem(
+                                column_id=str(s.get("column_id") or ""),
+                                date=str(s.get("date") or ""),
+                                area_name=str(s.get("area_name") or ""),
+                                interval_id=str(s.get("interval_id") or ""),
+                                price=float(s.get("price") or 0),
+                                selected=int(s.get("selected") or 0),
+                                select_type=int(s["select_type"]) if s.get("select_type") not in (None, "") else 1,
+                                max_count=int(s.get("max_count") or 0),
+                                status=str(s.get("status") or ""),
+                                is_lock=int(s.get("is_lock") or 0),
+                                lock_reason=str(s.get("lock_reason") or "")
+                            ))
+                        except (TypeError, ValueError):
+                            continue
                 groups.append(TimeSlotGroup(
-                    time_range=g.get("time_range", ""),
-                    start_time=g.get("start_time", ""),
-                    end_time=g.get("end_time", ""),
-                    date=g.get("date", ""),
-                    week=str(g.get("week", "")),
-                    week_name=g.get("week_name", ""),
+                    time_range=str(g.get("time_range") or ""),
+                    start_time=str(g.get("start_time") or ""),
+                    end_time=str(g.get("end_time") or ""),
+                    date=str(g.get("date") or ""),
+                    week=str(g.get("week") or ""),
+                    week_name=str(g.get("week_name") or ""),
                     slots=slots
                 ))
+        try:
+            status = int(data.get("status") or 0)
+        except (TypeError, ValueError):
+            status = 0
         return cls(
-            status=int(data.get("status", 0)),
-            info=str(data.get("info", "")),
+            status=status,
+            info=str(data.get("info") or ""),
             venue_id=str(body.get("venue_id", "")),
             date_list=dates,
             time_slot_list=groups
