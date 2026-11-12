@@ -127,6 +127,7 @@ def test_choose_verify(mock_client):
         post_data = mock_post.call_args[1]["data"]
         assert "selected" in post_data
         assert json.loads(post_data["selected"])[0]["interval_id"] == "3080"
+        assert "ids" not in post_data  # ids="" 会触发服务端 Illegal string offset
 
 def test_add_order(mock_client):
     api = XdtyApi(mock_client)
@@ -157,6 +158,7 @@ def test_add_order(mock_client):
         assert call_kwargs["data"]["captcha"] == "daxs"
         assert call_kwargs["data"]["stadium_id"] == 16
         assert call_kwargs["data"]["details[0][interval_id]"] == "3080"
+        assert "uids" not in call_kwargs["data"]
 
 def test_my_subscribe(mock_client):
     api = XdtyApi(mock_client)

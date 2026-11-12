@@ -195,16 +195,16 @@ class XdtyApi:
 
     def choose_verify(self, stadium_id: int, venue_id: int, selected_slots: List[Dict[str, Any]], is_academy: int = 1, ids: str = "") -> Dict[str, Any]:
         """选择场次预校验接口 (chooseVerify)"""
-        return self.client.post(
-            "public/index.php/index/stadium/chooseVerify",
-            data={
-                "stadium_id": stadium_id,
-                "venue_id": venue_id,
-                "selected": json.dumps(selected_slots, ensure_ascii=False),
-                "is_academy": is_academy,
-                "ids": ids
-            }
-        ).json()
+        data = {
+            "stadium_id": stadium_id,
+            "venue_id": venue_id,
+            "selected": json.dumps(selected_slots, ensure_ascii=False),
+            "is_academy": is_academy,
+        }
+        # 官方页面无随行人员时 ids 是空数组，jQuery 不会发送；服务端 11-06 起收到 ids="" 会报 Illegal string offset
+        if ids:
+            data["ids"] = ids
+        return self.client.post("public/index.php/index/stadium/chooseVerify", data=data).json()
 
     def get_venue_config(self, stadium_id: int, venue_id: int, category_id: int = 8) -> Dict[str, Any]:
         """获取场馆预约配置 (needRemark, isCanAppoint, verify_phone 等)"""
@@ -279,7 +279,7 @@ class XdtyApi:
             "details[0][interval_id]": interval_id,
             "details[0][area_id]": area_id,
             "details[0][price]": price,
-            "uids": "",
+            # 无随行人员时不发送 uids，与官方页面一致（同 chooseVerify 的 ids）
             "captcha": captcha,
             "category_id": category_id,
             "is_vip": is_vip,
