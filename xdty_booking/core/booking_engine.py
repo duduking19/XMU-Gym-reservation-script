@@ -83,6 +83,9 @@ class BookingEngine:
                 logger.warning(f"服务端预校验未通过: {info_msg}")
                 if any(word in str(info_msg) for word in ("课程", "排课", "教学占用")):
                     return _skip_course_occupied(str(info_msg))
+                if "Error::appError" in info_msg or "请稍后再试" in info_msg:
+                    # 学校服务端报错（如 PHP 堆栈），并非名额或资格问题：交给调度器在放票宽限期内重试
+                    return {"success": False, "info": info_msg, "slot": slot, "reason": "server_error"}
                 return {
                     "success": False,
                     "info": info_msg,
