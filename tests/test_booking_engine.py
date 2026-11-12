@@ -127,3 +127,18 @@ def test_booking_engine_snipe_booking_success():
         res = engine.snipe_booking(target_date="2026-09-12", poll_interval=0.01, max_duration_seconds=5)
         assert res["success"] is True
         assert mock_exec.call_count == 2
+
+
+def test_choose_verify_server_error_is_retryable_and_skips_order():
+    api = Mock()
+    slot = SlotItem(column_id="67", date="2026-11-11", area_name="爱秋体育馆健身房", interval_id="3065",
+                    price=0, selected=0, max_count=94, status="available")
+    api.get_intervals.return_value = Mock(status=1, find_slot=Mock(return_value=slot))
+    api.choose_verify.return_value = {
+        "status": 0,
+        "info": "预约失败，请稍后再试#0 /www/x/Stadium.php(1786): think\\Error::appError(2, 'Illegal string ...')",
+    }
+    engine = BookingEngine(api=api, captcha_solver=Mock(), config=AppConfig())
+    result = engine.execute_booking(target_date="2026-11-11")
+    assert result["success"] is False and result["reason"] == "server_error"
+    assert not api.add_order.called

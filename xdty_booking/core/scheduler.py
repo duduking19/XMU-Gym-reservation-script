@@ -18,13 +18,12 @@ from xdty_booking.notify.notifier import Notifier
 logger = logging.getLogger(__name__)
 
 # execute_booking 返回这些 reason 时，准点后宽限期内视为“尚未放票”而非最终失败
-_NOT_RELEASED_REASONS = ("course_occupied", "slot_missing", "query_failed")
+_NOT_RELEASED_REASONS = ("course_occupied", "slot_missing", "query_failed", "server_error")
 
 def planned_slots(cfg: AppConfig, visit_date: str) -> List[str]:
     """某入场日期应预约的时段，按优先级从高到低：特例表优先，其次每周计划（按星期），非每周模式用固定时段。"""
-    override = cfg.scheduler.date_overrides.get(visit_date)
-    if override:
-        return override
+    if visit_date in cfg.scheduler.date_overrides:
+        return cfg.scheduler.date_overrides[visit_date]
     if cfg.scheduler.weekly_enabled:
         return cfg.scheduler.weekly_plan.get(str(datetime.fromisoformat(visit_date).isoweekday()), [])
     return [cfg.target.preferred_time]
@@ -102,8 +101,8 @@ class BookingScheduler:
     早 7 点准点抢票调度服务：
     1. 预检自愈机制 (Pre-flight check): 在 07:00 抢票前 (如 06:55，默认提前 5 分钟) 自动唤醒自检登录态，若失效则拉起方案 A 嗅探自愈；
     2. 等待期间完全静默免打扰：不在半夜无谓发送心跳、修改代理或弹窗微信；
-    3. 服务端毫秒时间差校准：在放票前 30 秒高精度对时；
-    4. 准点提前 advance_ms 毫秒并发突发抢票；
+    3. 按已同步的系统时钟等待放票时刻；
+    4. 不提前开抢，多优先级计划的前 10 秒只尝试第一优先级；
     5. 支持名额不足自动就近时段降级；
     6. 抢票成功联动即时通知。
     """
@@ -334,7 +333,7 @@ class BookingScheduler:
                              + f"账号密码重新登录与会话续登均失败，{target_dt.strftime('%H:%M')} 抢票大概率失败。\n"
                              "请立即打开控制台登录页手动登录，服务会在开抢时自动采用新凭据。")
 
-            # 3. 冲刺等待期：在准点前 30 秒进行高精度服务端毫秒时间差校准
+            # 3. 冲刺等待期
             while (target_ts - datetime.now().timestamp()) > 35.0:
                 if self._stop_event.wait(1.0):
                     return {"success": False, "info": "定时任务已被手动终止"}
@@ -342,17 +341,13 @@ class BookingScheduler:
             if self._stop_event.is_set():
                 return {"success": False, "info": "定时任务已被手动终止"}
 
-            logger.info("正在与厦大体育馆服务器校准高精度时间差...")
-            if self.status_callback:
-                self.status_callback("正在与厦大体育馆服务器进行毫秒级高精度对时...")
-            time_offset = TimeSync.get_server_time_offset(self.cfg.base_url)
-
-            # 4. 高精度等待直至准点时刻 (提前 advance_ms 毫秒)
+            # HTTP Date 只有秒级精度，估算偏差可能把请求前移；定时预约以系统时钟为准。
+            # 保留旧配置兼容性，但这里不再使用 advance_ms 或 HTTP 时间偏移。
             remaining = target_ts - datetime.now().timestamp()
-            logger.info(f"距离准点放票还剩 {remaining:.2f} 秒，进入毫秒级高精度等待...")
+            logger.info(f"距离准点放票还剩 {remaining:.2f} 秒，等待系统时间到达 {target_time_str}")
             if self.status_callback:
-                self.status_callback(f"距离放票还剩 {remaining:.1f} 秒，进入突发就绪状态...")
-            TimeSync.wait_until(target_ts, offset=time_offset, advance_ms=self.cfg.scheduler.advance_ms)
+                self.status_callback(f"等待 {target_time_str} 准点开抢，不提前发送预约请求")
+            TimeSync.wait_until(target_ts, offset=0.0, advance_ms=0)
 
             if self._stop_event.is_set():
                 return {"success": False, "info": "定时任务已被手动终止"}
@@ -370,20 +365,22 @@ class BookingScheduler:
                 notifier=self.notifier,
                 on_session_expired=self.ensure_valid_session
             )
-            # 服务端放票不是准点瞬间完成：日期先挂出、时段稍后才从 locked 翻成可约。
-            # 宽限期内时段缺失 / 仍锁定 / 查询失败都视为“尚未放票”继续轮询，超时仍锁定才算排课占用。
-            # 每一轮按优先级从高到低依次尝试：明确失败（名额已满等）的时段立刻让位给下一优先级，
-            # 仍属“尚未放票”的留在队列里下一轮再试，全部时段都已定论或超过宽限期才收尾。
-            # ponytail: 优先级 1 还没挂出、优先级 2 已可约时会订到 2；要严格优先可加一个“放票等待窗”再降级。
-            deadline = time.time() + self.cfg.scheduler.release_grace_seconds
+            # 放票后的前 10 秒只允许第一优先级；窗口按目标时刻计算，不随重试延长。
+            # 窗口结束后恢复按优先级轮询；订单结果不确定时仍立即停止，避免重复预约。
+            priority_until = target_ts + 10 if len(preferred_times) > 1 else target_ts
+            deadline = max(time.time() + self.cfg.scheduler.release_grace_seconds, priority_until)
             results: Dict[str, Dict[str, Any]] = {}
             pending = list(preferred_times)
             while True:
                 for slot_time in list(pending):
+                    if slot_time != preferred_times[0] and time.time() < priority_until:
+                        continue
+                    if self._stop_event.is_set():
+                        return {"success": False, "info": "定时任务已被手动终止"}
                     res = results[slot_time] = engine.execute_booking(
                         target_date=visit_date,
                         preferred_time=slot_time,
-                        fallback_nearest=False if self.cfg.scheduler.weekly_enabled else self.cfg.scheduler.fallback_nearest,
+                        fallback_nearest=False if self.cfg.scheduler.weekly_enabled or len(preferred_times) > 1 else self.cfg.scheduler.fallback_nearest,
                         mode="早7点准点抢票" if len(preferred_times) == 1 else f"早7点准点抢票(优先级{preferred_times.index(slot_time) + 1})"
                     )
                     if res.get("success"):
@@ -391,14 +388,20 @@ class BookingScheduler:
                     if res.get("reason") in ("outcome_unknown", "booking_in_progress"):
                         pending.clear()
                         break
+                    logger.warning("优先级 %s [%s] 未成功：%s（reason=%s）",
+                                   preferred_times.index(slot_time) + 1, slot_time,
+                                   res.get("info"), res.get("reason", "明确失败"))
                     if res.get("reason") not in _NOT_RELEASED_REASONS:
                         pending.remove(slot_time)
-                        logger.warning(f"时段 [{slot_time}] 无法预约（{res.get('info')}），尝试下一优先级")
                 if res.get("success") or not pending or time.time() >= deadline:
                     break
+                protected_remaining = priority_until - time.time()
                 if self.status_callback:
-                    self.status_callback(f"⏳ 时段尚未放出 ({res.get('info')})，{int(deadline - time.time())} 秒内持续轮询...")
-                if self._stop_event.wait(2.0):
+                    if protected_remaining > 0:
+                        self.status_callback(f"第一优先级专属窗口，剩余 {protected_remaining:.1f} 秒；暂不尝试其他时段")
+                    else:
+                        self.status_callback(f"⏳ 时段尚未放出 ({res.get('info')})，{int(deadline - time.time())} 秒内持续轮询...")
+                if self._stop_event.wait(min(2.0, protected_remaining) if protected_remaining > 0 else 2.0):
                     return {"success": False, "info": "定时任务已被手动终止"}
 
             tail = "系统将继续执行下一个计划日。" if self.cfg.scheduler.weekly_enabled else "本次定时任务已结束。"

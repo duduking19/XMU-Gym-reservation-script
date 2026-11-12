@@ -1162,7 +1162,7 @@ def render_dashboard(data: dict) -> str:
                         <span><input type="checkbox" id="schedWeeklyEnabled" {'checked' if weekly_enabled else ''} onchange="toggleWeeklyPlan()"> 按每周计划循环预约</span>
                     </label>
                     <div id="weeklyPlanFields" style="display: {'block' if weekly_enabled else 'none'};">
-                        <p style="font-size: 13px; color: #475569; line-height: 1.7;">按<strong>实际入场日期</strong>填写；首选留空表示当天不预约。周六的场次在周五 07:00 开抢。每天最多填 3 个时段，<strong>从左到右优先级由高到低</strong>：首选因满额或课程占用约不到时，自动改约下一个备选；所填时段全部约不到才算失败，绝不改约计划外的时段，并通过已配置的通知渠道提醒。</p>
+                        <p style="font-size: 13px; color: #475569; line-height: 1.7;">按<strong>实际入场日期</strong>填写；首选留空表示当天不预约。周六的场次在周五 07:00 开抢。每天最多填 3 个时段，<strong>从左到右优先级由高到低</strong>：到达设定开抢时间才开始尝试，<strong>前 10 秒只尝试第一优先级</strong>（默认 07:00:00–07:00:10）；10 秒后首选仍未成功，才按顺序尝试备选；所填时段全部约不到才算失败，绝不改约计划外的时段，并通过已配置的通知渠道提醒。</p>
                         <div style="display: grid; grid-template-columns: 48px repeat({MAX_PRIORITY_SLOTS}, minmax(0, 1fr)); gap: 8px; align-items: center;">
                             <span></span><span style="font-size: 12px; color: #64748b;">首选</span><span style="font-size: 12px; color: #64748b;">备选 2</span><span style="font-size: 12px; color: #64748b;">备选 3</span>
                             {weekly_rows_html}
@@ -1170,7 +1170,7 @@ def render_dashboard(data: dict) -> str:
                         <datalist id="weeklyTimeOptions">{weekly_options_html}</datalist>
                         <p style="font-size: 12px; color: #64748b;">时段格式：16:30-18:00。修改运行中的计划，请先停止，再保存并重新开启。电脑需保持唤醒，服务重启后需重新开启。</p>
                         <div style="margin-top: 12px; font-weight: 600;">特例日期（优先于计划表）</div>
-                        <p style="font-size: 12px; color: #64748b; margin: 4px 0 8px;">指定某个<strong>入场日期</strong>改约其他时段，或给计划表没有的日子加一次预约；同样支持 3 个优先级。过期日期保存时自动清理。</p>
+                        <p style="font-size: 12px; color: #64748b; margin: 4px 0 8px;">指定某个<strong>入场日期</strong>改约其他时段，或给计划表没有的日子加一次预约；同样支持 3 个优先级。选定日期后，所有时段留空表示当天不预约；删除该行则恢复每周计划。过期日期保存时自动清理。</p>
                         <div id="overrideRows">{override_rows_html}</div>
                         <button type="button" class="btn-action" onclick="addOverrideRow()" style="font-size: 12px;">＋ 添加特例</button>
                     </div>
@@ -1825,7 +1825,7 @@ def render_dashboard(data: dict) -> str:
             document.querySelectorAll("#overrideRows .override-row").forEach(row => {{
                 const d = row.querySelector(".override-date").value.trim();
                 const slots = readSlots(row.querySelectorAll(".override-slot"));
-                if (d && slots.length) dateOverrides[d] = slots;
+                if (d) dateOverrides[d] = slots;
             }});
 
             return {{

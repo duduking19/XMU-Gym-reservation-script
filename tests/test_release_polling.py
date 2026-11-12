@@ -10,6 +10,7 @@ NOT_RELEASED = {'success': False, 'skipped': True, 'reason': 'course_occupied', 
 MISSING = {'success': False, 'reason': 'slot_missing', 'info': '未找到指定时段场次'}
 BOOKED = {'success': True, 'info': '预约成功'}
 FULL = {'success': False, 'info': '该时段目前无空闲名额 (已约满 30/30)', 'full': True}
+SERVER_ERROR = {'success': False, 'reason': 'server_error', 'info': '预约失败，请稍后再试#0 Stadium.php(1786)'}
 
 
 def run_once(cfg, results):
@@ -19,6 +20,7 @@ def run_once(cfg, results):
          patch.object(scheduler._stop_event, 'wait', return_value=False), \
          patch('xdty_booking.core.scheduler.TimeSync.get_server_time_offset', return_value=0), \
          patch('xdty_booking.core.scheduler.TimeSync.wait_until'), \
+         patch('xdty_booking.core.scheduler.time.time', return_value=datetime(2026, 9, 22, 7, 0, 11).timestamp()), \
          patch('xdty_booking.core.scheduler.BookingEngine.execute_booking', side_effect=results) as booking:
         clock.now.return_value = datetime(2026, 9, 22, 6, 59, 40)
         res = scheduler._run_once()
@@ -30,13 +32,18 @@ def test_keeps_polling_until_slot_is_released():
     assert res['success'] and booking.call_count == 3
 
 
+def test_server_error_keeps_polling_within_grace_period():
+    res, booking = run_once(AppConfig(), [SERVER_ERROR, SERVER_ERROR, BOOKED])
+    assert res['success'] and booking.call_count == 3
+
+
 def test_still_locked_after_grace_period_is_course_occupied():
     cfg = AppConfig(scheduler=SchedulerConfig(release_grace_seconds=0))
     res, booking = run_once(cfg, [NOT_RELEASED, BOOKED])
     assert res['reason'] == 'course_occupied' and booking.call_count == 1
 
 
-# 时钟停在 2026-09-22 06:59:40，入场日期为次日 09-23（周三）
+# 预检时刻为 06:59:40，模拟开抢等待到 07:00:11；这里验证保护窗口结束后的降级行为。
 def priority_cfg(*slots, grace=600):
     return AppConfig(scheduler=SchedulerConfig(
         weekly_enabled=True, weekly_plan={'3': list(slots)}, release_grace_seconds=grace))
@@ -80,6 +87,7 @@ def test_all_priorities_course_occupied_sends_one_skip_notification():
          patch.object(scheduler._stop_event, 'wait', return_value=False), \
          patch('xdty_booking.core.scheduler.TimeSync.get_server_time_offset', return_value=0), \
          patch('xdty_booking.core.scheduler.TimeSync.wait_until'), \
+         patch('xdty_booking.core.scheduler.time.time', return_value=datetime(2026, 9, 22, 7, 0, 11).timestamp()), \
          patch('xdty_booking.core.scheduler.BookingEngine.execute_booking', side_effect=[NOT_RELEASED, NOT_RELEASED]):
         clock.now.return_value = datetime(2026, 9, 22, 6, 59, 40)
         res = scheduler._run_once()

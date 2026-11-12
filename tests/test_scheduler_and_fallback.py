@@ -138,8 +138,8 @@ def test_scheduler_silent_run_flow():
         res = scheduler.run(target_time="07:00:00")
         assert res["success"] is True
         mock_precheck.assert_called_once()
-        mock_sync.assert_called_once()
-        mock_wait.assert_called_once()
+        mock_sync.assert_not_called()
+        mock_wait.assert_called_once_with(datetime(2026, 9, 12, 7).timestamp(), offset=0.0, advance_ms=0)
         mock_engine.execute_booking.assert_called_once()
         session_mgr.start_heartbeat_daemon.assert_not_called()
 

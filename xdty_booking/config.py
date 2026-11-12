@@ -178,9 +178,8 @@ class SchedulerConfig:
         for day, slots in self.date_overrides.items():
             if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(day)):
                 raise ValueError("特例日期格式应为 YYYY-MM-DD")
-            slots = self._check_slots(slots)
-            if slots:
-                overrides[str(day)] = slots
+            # 空列表是明确的休息日，必须保留，不能退回每周计划。
+            overrides[str(day)] = self._check_slots(slots)
         self.date_overrides = overrides
 
 @dataclass
